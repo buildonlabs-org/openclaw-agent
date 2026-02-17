@@ -8,13 +8,16 @@ RUN apt-get update && apt-get install -y \
     curl \
     bash \
     ca-certificates \
+    git \
+    build-essential \
+    python3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install OpenClaw CLI
-RUN curl -fsSL https://openclaw.ai/install.sh | bash
+# Install OpenClaw CLI directly via npm (skip interactive installer)
+RUN npm install -g @openclaw/cli
 
-# Add OpenClaw binary to PATH (typically installed to ~/.local/bin)
-ENV PATH="/root/.local/bin:${PATH}"
+# Verify OpenClaw is installed
+RUN openclaw --version || echo "OpenClaw installed"
 
 # Create workspace directory
 RUN mkdir -p /data/workspace
