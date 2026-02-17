@@ -44,18 +44,23 @@ echo ""
 echo "Checking OpenClaw gateway command..."
 openclaw gateway --help > /tmp/gateway-help.txt 2>&1 || echo "Could not get gateway help"
 if [ -f /tmp/gateway-help.txt ]; then
-    echo "Gateway command available. Help output:"
-    head -20 /tmp/gateway-help.txt
+    echo "Gateway command available. Full help:"
+    cat /tmp/gateway-help.txt
+    echo ""
 fi
 
 # Start OpenClaw gateway in the background
 echo ""
 echo "Starting OpenClaw gateway on port $OPENCLAW_GATEWAY_PORT..."
+echo "Working directory: $OPENCLAW_WORKSPACE"
+
+# Change to workspace directory and start gateway
+cd "$OPENCLAW_WORKSPACE"
 openclaw gateway \
     --port "$OPENCLAW_GATEWAY_PORT" \
     --bind loopback \
-    --workspace "$OPENCLAW_WORKSPACE" \
     --allow-unconfigured \
+    --dev \
     > /tmp/openclaw-gateway.log 2>&1 &
 
 GATEWAY_PID=$!
