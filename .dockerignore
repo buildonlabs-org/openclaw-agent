@@ -1,0 +1,47 @@
+# Node modules
+node_modules
+npm-debug.log
+yarn-error.log
+
+# Git
+.git
+.gitignore
+
+# Environment files
+.env
+.env.*
+
+# Logs
+logs
+*.log
+
+# Data directories (use volumes instead)
+data/
+
+# Development files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Testing
+coverage
+.nyc_output
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist
+build
+tmp
+
+# Documentation (not needed in container)
+*.md
+!README.md
+
+# Railway specific
+railway.json
+railway.toml
