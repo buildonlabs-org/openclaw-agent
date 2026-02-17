@@ -1,13 +1,14 @@
 # OpenClaw Gateway on Railway
 # This Dockerfile creates a minimal container for running the OpenClaw gateway
 
-FROM node:20-alpine
+FROM node:20-slim
 
 # Install dependencies for OpenClaw
-RUN apk add --no-cache \
+RUN apt-get update && apt-get install -y \
     curl \
     bash \
-    ca-certificates
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 # Install OpenClaw CLI
 RUN curl -fsSL https://openclaw.ai/install.sh | bash
