@@ -1,7 +1,7 @@
 # OpenClaw Gateway on Railway
 # This Dockerfile creates a minimal container for running the OpenClaw gateway
 
-FROM node:20-slim
+FROM node:22-slim
 
 # Install dependencies for OpenClaw
 RUN apt-get update && apt-get install -y \
@@ -25,12 +25,8 @@ RUN curl -fsSL https://openclaw.ai/install.sh | bash || \
 # Add common OpenClaw installation paths to PATH
 ENV PATH="/root/.local/bin:/root/.openclaw/bin:${PATH}"
 
-# Verify OpenClaw binary is accessible
-RUN which openclaw && openclaw --version || \
-    (echo "ERROR: OpenClaw not found in PATH" && \
-     echo "Checking common locations..." && \
-     find /root -name openclaw -type f 2>/dev/null && \
-     exit 1)
+# Verify OpenClaw is installed and working
+RUN openclaw --version
 
 # Create workspace directory
 RUN mkdir -p /data/workspace
