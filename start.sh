@@ -53,8 +53,9 @@ echo ""
 echo "Starting OpenClaw gateway on port $OPENCLAW_GATEWAY_PORT..."
 openclaw gateway \
     --port "$OPENCLAW_GATEWAY_PORT" \
-    --host "127.0.0.1" \
+    --bind loopback \
     --workspace "$OPENCLAW_WORKSPACE" \
+    --allow-unconfigured \
     > /tmp/openclaw-gateway.log 2>&1 &
 
 GATEWAY_PID=$!
