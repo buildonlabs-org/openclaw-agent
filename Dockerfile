@@ -13,11 +13,24 @@ RUN apt-get update && apt-get install -y \
     python3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install OpenClaw CLI directly via npm (skip interactive installer)
-RUN npm install -g @openclaw/cli
+# Install OpenClaw CLI using the installer in non-interactive mode
+# Set environment variables to skip interactive prompts
+ENV OPENCLAW_SKIP_SETUP=1 \
+    DEBIAN_FRONTEND=noninteractive \
+    CI=true
 
-# Verify OpenClaw is installed
-RUN openclaw --version || echo "OpenClaw installed"
+RUN curl -fsSL https://openclaw.ai/install.sh | bash || \
+    (echo "Installer may have failed on setup, checking if binary exists..." && which openclaw)
+
+# Add common OpenClaw installation paths to PATH
+ENV PATH="/root/.local/bin:/root/.openclaw/bin:${PATH}"
+
+# Verify OpenClaw binary is accessible
+RUN which openclaw && openclaw --version || \
+    (echo "ERROR: OpenClaw not found in PATH" && \
+     echo "Checking common locations..." && \
+     find /root -name openclaw -type f 2>/dev/null && \
+     exit 1)
 
 # Create workspace directory
 RUN mkdir -p /data/workspace
