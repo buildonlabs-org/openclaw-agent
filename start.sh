@@ -55,7 +55,8 @@ echo "Starting OpenClaw gateway on port $OPENCLAW_GATEWAY_PORT..."
 echo "Working directory: $OPENCLAW_WORKSPACE"
 
 # Build gateway command with optional auth settings
-GATEWAY_CMD="openclaw gateway --port $OPENCLAW_GATEWAY_PORT --bind loopback --allow-unconfigured --dev"
+# Use 'run' subcommand for foreground operation and add flags to skip pairing
+GATEWAY_CMD="openclaw gateway run --port $OPENCLAW_GATEWAY_PORT --bind loopback --allow-unconfigured --dev"
 
 # Add authentication options based on environment variables
 if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then

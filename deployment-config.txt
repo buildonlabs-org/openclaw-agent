@@ -11,6 +11,24 @@ WHAT WAS FIXED:
 ✓ Gateway now properly handles authentication (which IS required)
 ✓ Auto-generates temporary token if none provided
 ✓ Gateway starts successfully with authentication
+✓ Device management API for web-based pairing (no CLI needed!)
+
+
+DEVICE PAIRING - NEW FEATURE:
+-----------------------------
+Container now includes API endpoints for device approval!
+
+When users see "pairing required":
+1. Launcher shows "🔐 Pair Device" button
+2. User clicks to open device management modal
+3. Pending devices are listed automatically
+4. User clicks "Approve" next to pending device
+5. Device approved instantly
+6. User refreshes and connects successfully
+
+API endpoints:
+  GET  /api/devices          → List all devices
+  POST /api/devices/approve  → Approve by requestId
 
 
 AUTHENTICATION REQUIRED:

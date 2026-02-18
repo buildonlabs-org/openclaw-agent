@@ -74,6 +74,37 @@ Check the container logs for the auto-generated authentication token. Look for t
 | `DATABASE_URL` | PostgreSQL connection (if needed) | - |
 | `REDIS_URL` | Redis connection (if needed) | - |
 
+## 🔐 Device Pairing
+
+OpenClaw requires device pairing for security. Remote connections need explicit approval.
+
+### Web-Based Pairing (With Launcher)
+
+The launcher provides a user-friendly device management interface:
+
+1. **Deploy agent** via launcher
+2. **Connect from client** (browser, CLI, etc.)
+3. **Click "🔐 Pair Device"** button in launcher UI
+4. **View pending devices** in modal
+5. **Click "Approve"** next to pending device
+6. **Refresh and connect** - device is now paired!
+
+**API Endpoints:**
+- `GET /api/devices` - List all devices (pending and approved)
+- `POST /api/devices/approve` - Approve device by requestId
+  ```json
+  { "requestId": "abc123def456" }
+  ```
+
+### Manual Pairing (Standalone)
+
+If not using the launcher, you can approve devices via Railway logs:
+
+1. Get shell access to container (Railway CLI)
+2. Run: `openclaw devices list`
+3. Find pending device requestId
+4. Run: `openclaw devices approve <requestId>`
+
 ### Authentication
 
 **The OpenClaw gateway requires authentication.** You have three options:
@@ -139,12 +170,18 @@ railway logs
    - Or set `OPENCLAW_GATEWAY_TOKEN` env var for persistent token
    - Configure your client with the token before connecting
 
-2. **Where do I find my token?**
+2. **"disconnected (1008): pairing required" error:**
+   - Device needs to be approved for security
+   - **With launcher:** Click "🔐 Pair Device" button → Approve device
+   - **Without launcher:** Use `/api/devices` and `/api/devices/approve` endpoints
+   - Or get shell access and run: `openclaw devices approve <requestId>`
+
+3. **Where do I find my token?**
    - Check Railway deployment logs during startup
    - Look for the startup output with the 🔑 emoji
    - If using launcher: token is in the launcher UI with copy button
 
-3. **Gateway not starting:**
+4. **Gateway not starting:**
    - Check if `OPENAI_API_KEY` is set
    - View logs: `cat /tmp/openclaw-gateway.log`
 
