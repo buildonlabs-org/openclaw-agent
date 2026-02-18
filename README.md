@@ -14,10 +14,18 @@ docker build -t openclaw-gateway .
 docker run -p 8080:8080 \
   -e PORT=8080 \
   -e OPENAI_API_KEY=your-api-key \
+  -e OPENCLAW_GATEWAY_TOKEN=test-token-123 \
   openclaw-gateway
 ```
 
 Visit http://localhost:8080/health to verify it's running.
+
+**Getting your token:**
+Check the container logs for the auto-generated authentication token. Look for the line:
+```
+🔑 Copy this token to connect to your gateway:
+   <your-64-character-token>
+```
 
 ### Railway Deployment
 
@@ -27,7 +35,7 @@ Visit http://localhost:8080/health to verify it's running.
    ```
    OPENAI_API_KEY=sk-...
    OPENAI_MODEL=gpt-4o-mini (optional, defaults to gpt-4)
-   OPENCLAW_GATEWAY_TOKEN=your-token (optional, for auth)
+   OPENCLAW_GATEWAY_TOKEN=$(openssl rand -hex 32) (optional but recommended)
    ```
 
 3. **Deploy from GitHub:**
@@ -36,7 +44,13 @@ Visit http://localhost:8080/health to verify it's running.
    - Set root directory if needed
    - Deploy!
 
-4. **Health Check:**
+4. **Get your connection token:**
+   - Check Railway logs during startup
+   - Look for: "🔑 Copy this token to connect to your gateway:"
+   - Copy the 64-character token
+   - Use it to connect your OpenClaw client
+
+5. **Health Check:**
    Railway automatically monitors `/health` endpoint
 
 ## 📋 Environment Variables
@@ -62,19 +76,23 @@ Visit http://localhost:8080/health to verify it's running.
 
 ### Authentication
 
-The OpenClaw gateway authentication is optional. For production use, configure one of these:
+**The OpenClaw gateway requires authentication.** You have three options:
 
-1. **Token authentication** (recommended):
+1. **Set a persistent token** (recommended for production):
    ```bash
-   OPENCLAW_GATEWAY_TOKEN=your-secret-token
+   OPENCLAW_GATEWAY_TOKEN=your-secret-token-here
    ```
+   Generate a secure token: `openssl rand -hex 32`
 
-2. **Password authentication**:
+2. **Set a password**:
    ```bash
    OPENCLAW_PASSWORD=your-password
    ```
 
-3. **No authentication**: Simply don't set either variable (suitable for internal/testing environments)
+3. **Use auto-generated token** (default):
+   - If neither variable is set, the container automatically generates a temporary token
+   - The token is displayed in the startup logs
+   - Note: Token changes on each restart unless you set `OPENCLAW_GATEWAY_TOKEN`
 
 ## 🏗️ Architecture
 
@@ -116,12 +134,17 @@ railway logs
 ### Common Issues
 
 1. **"disconnected (1008): unauthorized" error:**
-   - Your client is sending auth credentials but gateway doesn't expect them
-   - Set `OPENCLAW_GATEWAY_TOKEN` or `OPENCLAW_PASSWORD` to enable auth
-   - Or configure your client to connect without authentication
-   - Restart the service after updating environment variables
+   - You need to use the gateway's authentication token
+   - Check Railway logs for "🔑 Copy this token to connect to your gateway:"
+   - Or set `OPENCLAW_GATEWAY_TOKEN` env var for persistent token
+   - Configure your client with the token before connecting
 
-2. **Gateway not starting:**
+2. **Where do I find my token?**
+   - Check Railway deployment logs during startup
+   - Look for the startup output with the 🔑 emoji
+   - If using launcher: token is in the launcher UI with copy button
+
+3. **Gateway not starting:**
    - Check if `OPENAI_API_KEY` is set
    - View logs: `cat /tmp/openclaw-gateway.log`
 

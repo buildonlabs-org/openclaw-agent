@@ -59,13 +59,23 @@ GATEWAY_CMD="openclaw gateway --port $OPENCLAW_GATEWAY_PORT --bind loopback --al
 
 # Add authentication options based on environment variables
 if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then
-    echo "✓ Running with token authentication"
+    echo "✓ Using provided token for authentication"
     GATEWAY_CMD="$GATEWAY_CMD --auth token --token $OPENCLAW_GATEWAY_TOKEN"
 elif [ -n "$OPENCLAW_PASSWORD" ]; then
-    echo "✓ Running with password authentication"
+    echo "✓ Using provided password for authentication"
     GATEWAY_CMD="$GATEWAY_CMD --auth password --password $OPENCLAW_PASSWORD"
 else
-    echo "✓ Running without authentication (no token or password set)"
+    # Generate a token automatically if none provided
+    echo "⚠️  No OPENCLAW_GATEWAY_TOKEN or OPENCLAW_PASSWORD set"
+    echo "Generating temporary token for this session..."
+    TEMP_TOKEN=$(openssl rand -hex 32 2>/dev/null || echo "railway-openclaw-$(date +%s)")
+    echo "✓ Generated token: $TEMP_TOKEN"
+    echo ""
+    echo "🔑 Copy this token to connect to your gateway:"
+    echo "   $TEMP_TOKEN"
+    echo ""
+    echo "For persistent token, set OPENCLAW_GATEWAY_TOKEN environment variable."
+    GATEWAY_CMD="$GATEWAY_CMD --auth token --token $TEMP_TOKEN"
 fi
 
 # Change to workspace directory and start gateway

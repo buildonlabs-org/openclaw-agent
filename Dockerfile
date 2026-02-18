@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     git \
     build-essential \
     python3 \
+    openssl \
     && rm -rf /var/lib/apt/lists/*
 
 # Install OpenClaw CLI using the installer in non-interactive mode

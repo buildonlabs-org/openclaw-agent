@@ -1,0 +1,62 @@
+OpenClaw Gateway - Authentication Update
+=========================================
+
+KEY CHANGE:
+----------
+Gateway auto-generates secure token and displays it in logs.
+
+
+WHAT TO EXPECT:
+--------------
+1. Gateway REQUIRES authentication (cannot run without it)
+
+2. Auto-generated token printed to logs:
+   → Token generated using openssl rand -hex 32 (64 characters)
+   → Displayed in Railway logs during startup
+   → Look for: "🔑 Copy this token to connect to your gateway:"
+   → Token changes on each restart (unless OPENCLAW_GATEWAY_TOKEN is set)
+
+3. Persistent token option:
+   → Set OPENCLAW_GATEWAY_TOKEN env var for static token
+   → Recommended for production deployments
+   → Persists across container restarts
+
+
+HOW TO CONNECT:
+---------------
+1. Deploy the app to Railway
+2. Check Railway logs for startup output
+3. Find the line: "🔑 Copy this token to connect to your gateway:"
+4. Copy the token from the next line
+5. Use token when connecting to the gateway
+
+For launcher deployments:
+  → Token is passed automatically via OPENCLAW_GATEWAY_TOKEN
+  → Stored securely in deployment database
+  → Available in launcher UI with copy button
+
+
+FOR PERSISTENT TOKEN:
+--------------------
+Set environment variable before deploy:
+  OPENCLAW_GATEWAY_TOKEN=<your-secure-token>
+
+Generate secure token:
+  openssl rand -hex 32
+
+
+SECURITY:
+--------
+✓ Token NOT exposed via public web endpoints
+✓ Only visible in deployment logs (secure)
+✓ Launcher stores tokens securely in database
+✓ Each deployment gets unique token
+
+
+BEHAVIOR:
+--------
+✓ Gateway starts with auth enabled
+✓ Token auto-generated if not provided
+✓ Token printed clearly in logs
+✓ Secure: no public endpoint exposure
+✓ Clients connect using the token from logs or launcher UI

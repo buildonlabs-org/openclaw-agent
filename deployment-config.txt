@@ -8,9 +8,30 @@ Redeploy the Railway service to apply authentication fix.
 
 WHAT WAS FIXED:
 --------------
-✓ Removed invalid --no-auth flag (was causing gateway crash)
-✓ Implemented proper authentication handling
-✓ Gateway now starts successfully with or without auth
+✓ Gateway now properly handles authentication (which IS required)
+✓ Auto-generates temporary token if none provided
+✓ Gateway starts successfully with authentication
+
+
+AUTHENTICATION REQUIRED:
+-----------------------
+OpenClaw gateway REQUIRES authentication. Choose one:
+
+  OPTION 1 - Set persistent token (RECOMMENDED):
+  OPENCLAW_GATEWAY_TOKEN=your-secret-token
+    → Generate with: openssl rand -hex 32
+    → Token persists across restarts
+    → Best for production use
+
+  OPTION 2 - Set password:
+  OPENCLAW_PASSWORD=your-password
+    → Simple password authentication
+
+  OPTION 3 - Use auto-generated token (DEFAULT):
+    → Don't set any auth variables
+    → Container generates temporary token on startup
+    → Token shown in Railway logs
+    → Changes on each restart
 
 
 DEPLOYMENT STEPS:
@@ -19,36 +40,33 @@ DEPLOYMENT STEPS:
 1. GO TO RAILWAY DASHBOARD
    → Select your openclaw-agent deployment
 
-2. TRIGGER NEW DEPLOYMENT
-   → Push this update to main branch (will auto-deploy)
-   OR
-   → Manually trigger redeploy in Railway dashboard
-
-3. VERIFY ENVIRONMENT VARIABLES
+2. SET ENVIRONMENT VARIABLES
    Required:
    ✓ OPENAI_API_KEY=sk-...
 
-   Optional (no changes needed unless you want auth):
-   - OPENCLAW_GATEWAY_TOKEN=<token>  (for secured access)
-   - OPENCLAW_PASSWORD=<password>    (alternative auth)
-   - OPENAI_MODEL=gpt-4o-mini        (cost optimization)
+   Recommended (for persistent access):
+   ✓ OPENCLAW_GATEWAY_TOKEN=<generated-token>
 
-4. MONITOR DEPLOYMENT
-   → Check logs for "✓ Gateway process started"
-   → Verify /health endpoint returns 200 OK
-   → Test WebSocket connection
+3. TRIGGER NEW DEPLOYMENT
+   → Push update to main branch (auto-deploys)
+   OR
+   → Manually trigger redeploy
+
+4. GET YOUR TOKEN
+   → Check Railway deployment logs
+   → Look for: "🔑 Copy this token to connect to your gateway:"
+   → Copy the 64-character token from logs
+   → If using launcher: token shown in UI with copy button
 
 
 EXPECTED RESULT:
 ----------------
-Gateway starts without authentication errors.
-No "disconnected (1008): unauthorized" errors.
-WebSocket connections work immediately.
+✓ Gateway starts with authentication enabled
+✓ Token printed clearly in startup logs
+✓ Secure: token NOT exposed via public endpoints
+✓ Clients can connect using the token from logs
+✓ No more "unauthorized" errors when using correct token
 
-
-IF STILL SEEING ERRORS:
------------------------
-- Wait 30 seconds for gateway initialization
-- Check Railway logs for detailed error messages  
-- Verify OPENAI_API_KEY is set correctly
-- Ensure you're using the latest deployment (not cached build)
+ENDPOINTS:
+----------
+  /health  → Health check (no sensitive data)
