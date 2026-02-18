@@ -42,6 +42,22 @@ fi
 # Show OpenClaw version
 echo "OpenClaw version: $(openclaw --version 2>&1 || echo 'Unable to get version')"
 
+# Generate or load gateway token (needed for both first-time and subsequent runs)
+if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then
+    echo "✓ Using provided OPENCLAW_GATEWAY_TOKEN from environment"
+else
+    TOKEN_FILE="$OPENCLAW_STATE_DIR/gateway.token"
+    if [ -f "$TOKEN_FILE" ]; then
+        OPENCLAW_GATEWAY_TOKEN=$(cat "$TOKEN_FILE")
+        echo "✓ Loaded gateway token from $TOKEN_FILE"
+    else
+        OPENCLAW_GATEWAY_TOKEN=$(openssl rand -hex 32 2>/dev/null || echo "railway-openclaw-$(date +%s)")
+        echo "$OPENCLAW_GATEWAY_TOKEN" > "$TOKEN_FILE"
+        echo "✓ Generated and saved gateway token to $TOKEN_FILE"
+    fi
+    export OPENCLAW_GATEWAY_TOKEN
+fi
+
 # Check if already configured
 CONFIG_FILE="$OPENCLAW_STATE_DIR/openclaw.json"
 if [ ! -f "$CONFIG_FILE" ]; then
@@ -53,22 +69,16 @@ if [ ! -f "$CONFIG_FILE" ]; then
         exit 1
     fi
     
-    # Generate token if not provided
-    if [ -z "$OPENCLAW_GATEWAY_TOKEN" ]; then
-        TEMP_TOKEN=$(openssl rand -hex 32 2>/dev/null || echo "railway-openclaw-$(date +%s)")
-        export OPENCLAW_GATEWAY_TOKEN="$TEMP_TOKEN"
-        echo "Generated gateway token for onboarding"
-    fi
-    
     # Determine model
     MODEL="${OPENAI_MODEL:-gpt-4o-mini}"
     echo "Configuring with model: $MODEL"
     
-    # Run onboarding
+    # Run onboarding with all necessary flags
     cd "$OPENCLAW_WORKSPACE"
     openclaw onboard \
         --non-interactive \
         --accept-risk \
+        --json \
         --no-install-daemon \
         --skip-health \
         --workspace "$OPENCLAW_WORKSPACE" \
@@ -80,14 +90,26 @@ if [ ! -f "$CONFIG_FILE" ]; then
         --openai-api-key "$OPENAI_API_KEY" \
         --flow quickstart
     
-    if [ $? -eq 0 ]; then
-        echo "✓ Onboarding completed successfully"
+    ONBOARD_EXIT=$?
+    
+    if [ $ONBOARD_EXIT -eq 0 ] || [ -f "$CONFIG_FILE" ]; then
+        echo "✓ Onboarding completed (exit code: $ONBOARD_EXIT)"
         
-        # Set the model
+        # Post-onboarding configuration (critical for chat to work!)
+        echo "Applying post-onboarding configuration..."
+        
+        # Set gateway token in config file
+        echo "Setting gateway.auth.token in config..."
+        openclaw config set gateway.auth.token "$OPENCLAW_GATEWAY_TOKEN" || echo "Warning: Could not set gateway token in config"
+        
+        # Set the model AFTER onboarding
         echo "Setting model to $MODEL..."
         openclaw models set "$MODEL" || echo "Warning: Could not set model"
+        
+        echo "✓ Post-onboarding configuration completed"
     else
-        echo "⚠️  Onboarding completed with warnings (this is often normal)"
+        echo "❌ Onboarding failed with exit code $ONBOARD_EXIT"
+        exit 1
     fi
 else
     echo "✓ Gateway already configured (found $CONFIG_FILE)"
@@ -97,6 +119,12 @@ fi
 echo ""
 echo "Configuring gateway settings..."
 cd "$OPENCLAW_WORKSPACE"
+
+# Set gateway token in config (critical!)
+if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then
+    echo "Setting gateway.auth.token in config..."
+    openclaw config set gateway.auth.token "$OPENCLAW_GATEWAY_TOKEN" || echo "Warning: Could not set gateway token"
+fi
 
 # Set allowInsecureAuth to bypass device pairing (key setting!)
 echo "Setting gateway.controlUi.allowInsecureAuth=true..."

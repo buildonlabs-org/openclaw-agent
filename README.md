@@ -53,7 +53,33 @@ Check the container logs for the auto-generated authentication token. Look for t
 5. **Health Check:**
    Railway automatically monitors `/health` endpoint
 
-## 📋 Environment Variables
+## � Key Configuration Details
+
+This deployment configuration is based on analysis of the working [arjunkomath/openclaw-railway-template](https://github.com/arjunkomath/openclaw-railway-template). Critical insights for chat functionality:
+
+1. **Gateway Token Persistence**: Token is generated once and saved to `/data/.openclaw/gateway.token`
+   - Ensures consistency across restarts
+   - Must be set in BOTH the config file AND as a command-line flag
+   
+2. **Post-Onboarding Configuration**: After `openclaw onboard`, we explicitly:
+   - Set `gateway.auth.token` in config file (critical for gateway to read credentials)
+   - Set `gateway.controlUi.allowInsecureAuth=true` (bypasses device pairing for Control UI)
+   - Configure `gateway.trustedProxies` for Railway's networking
+
+3. **Model Configuration**: Model is set AFTER onboarding completes using `openclaw models set`
+   - Setting during onboarding doesn't persist properly
+   - Ensures chat uses specified model instead of defaulting to Claude
+
+4. **Essential Onboarding Flags**: Using `--json`, `--accept-risk`, `--no-install-daemon`, and `--skip-health`
+   - Ensures reliable non-interactive initialization
+   - Prevents daemon conflicts and health check timeouts
+
+**Without these steps**, the gateway may:
+- Default to Claude model despite providing OpenAI credentials (causing "chat not responding")
+- Require device pairing for Control UI connections
+- Fail to authenticate properly across restarts
+
+## �📋 Environment Variables
 
 ### Required
 

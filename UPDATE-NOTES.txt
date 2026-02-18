@@ -1,12 +1,39 @@
 OpenClaw Gateway - Complete Setup Solution
 ==========================================
 
+LATEST UPDATE - Chat Response Fix:
+----------------------------------
+Based on analysis of arjunkomath/openclaw-railway-template, we identified
+and fixed the root cause of "chat not responding":
+
+**The Problem:**
+- Gateway was defaulting to Claude model even with OpenAI credentials
+- Config file wasn't persisting gateway token properly
+- Model setting during onboarding didn't stick
+
+**The Solution:**
+1. Added --json flag to onboarding command
+2. Explicitly set gateway.auth.token in config file AFTER onboarding
+3. Run 'openclaw models set' AFTER onboarding completes (not during)
+4. Persist gateway token to file for consistency across restarts
+
+**Changes Made:**
+- Token generation moved before config check (needed for all runs)
+- Token saved to /data/.openclaw/gateway.token
+- Post-onboarding config now includes: gateway.auth.token setting
+- Model is set as separate step after onboarding succeeds
+
+These changes match the working Railway template's approach and ensure
+the gateway properly authenticates and routes requests to OpenAI.
+
+
 KEY CHANGES:
 -----------
 1. Gateway auto-generates secure token and displays it in logs
 2. Device management API added for web-based pairing
 3. **CRITICAL: Gateway now auto-configures to bypass device pairing**
 4. **NEW: Automatic onboarding on first deployment**
+5. **FIXED: Chat now responds using configured OpenAI model**
 
 
 AUTOMATIC ONBOARDING:

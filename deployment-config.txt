@@ -1,9 +1,33 @@
 OpenClaw Agent - Required Deployment Update
 ============================================
 
+⚠️  CRITICAL UPDATE - Chat Response Fix:
+---------------------------------------
+Latest update based on arjunkomath/openclaw-railway-template analysis.
+
+ROOT CAUSE IDENTIFIED:
+- Gateway defaulted to Claude model despite OpenAI configuration
+- gateway.auth.token wasn't being set in config file
+- Model setting during onboarding didn't persist
+- These issues prevented chat from responding to user messages
+
+SOLUTION IMPLEMENTED:
+✓ Gateway token now saved to /data/.openclaw/gateway.token
+✓ Token explicitly set in config file: gateway.auth.token
+✓ Model set AFTER onboarding (openclaw models set gpt-4o-mini)
+✓ Added --json flag to onboarding for proper JSON output
+✓ Token generation happens before all other steps
+
+VERIFICATION AFTER DEPLOY:
+1. Check logs for "Setting gateway.auth.token in config..."
+2. Check logs for "Setting model to gpt-4o-mini..."
+3. Connect to gateway and test chat
+4. Verify chat responds using OpenAI (not "model not found" errors)
+
+
 ACTION REQUIRED:
 ---------------
-Redeploy the Railway service to apply authentication fix.
+Redeploy the Railway service to apply these critical fixes.
 
 
 WHAT WAS FIXED:
@@ -13,6 +37,7 @@ WHAT WAS FIXED:
 ✓ Gateway starts successfully with authentication
 ✓ **CRITICAL: Auto-configures to bypass device pairing**
 ✓ **NEW: Automatic onboarding with OpenAI credentials**
+✓ **FIXED: Chat now responds using OpenAI gpt-4o-mini**
 ✓ Device management API for channel-specific pairing (Telegram/Discord)
 
 
