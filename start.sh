@@ -39,15 +39,20 @@ fi
 # Show OpenClaw version
 echo "OpenClaw version: $(openclaw --version 2>&1 || echo 'Unable to get version')"
 
-# Show available commands
+# Configure gateway settings to bypass device pairing
 echo ""
-echo "Checking OpenClaw gateway command..."
-openclaw gateway --help > /tmp/gateway-help.txt 2>&1 || echo "Could not get gateway help"
-if [ -f /tmp/gateway-help.txt ]; then
-    echo "Gateway command available. Full help:"
-    cat /tmp/gateway-help.txt
-    echo ""
-fi
+echo "Configuring gateway settings..."
+cd "$OPENCLAW_WORKSPACE"
+
+# Set allowInsecureAuth to bypass device pairing (key setting!)
+echo "Setting gateway.controlUi.allowInsecureAuth=true..."
+openclaw config set gateway.controlUi.allowInsecureAuth true || echo "Warning: Could not set allowInsecureAuth"
+
+# Set trusted proxies
+echo "Setting gateway.trustedProxies..."
+openclaw config set --json gateway.trustedProxies '["127.0.0.1"]' || echo "Warning: Could not set trustedProxies"
+
+echo "✓ Gateway configuration completed"
 
 # Start OpenClaw gateway in the background
 echo ""

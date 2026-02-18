@@ -11,14 +11,25 @@ WHAT WAS FIXED:
 ✓ Gateway now properly handles authentication (which IS required)
 ✓ Auto-generates temporary token if none provided
 ✓ Gateway starts successfully with authentication
-✓ Device management API for web-based pairing (no CLI needed!)
+✓ **CRITICAL: Auto-configures to bypass device pairing**
+✓ Device management API for channel-specific pairing (Telegram/Discord)
 
 
-DEVICE PAIRING - NEW FEATURE:
------------------------------
-Container now includes API endpoints for device approval!
+KEY FIX - NO MORE "PAIRING REQUIRED" ERRORS:
+--------------------------------------------
+The container now automatically runs:
+  openclaw config set gateway.controlUi.allowInsecureAuth true
 
-When users see "pairing required":
+This bypasses device pairing while maintaining token-based security.
+Based on successful Railway template: github.com/arjunkomath/openclaw-railway-template
+
+
+DEVICE PAIRING (For Channels Only):
+-----------------------------------
+Gateway connections work immediately without pairing.
+Telegram/Discord bots may need channel-specific pairing:
+
+When users see "pairing required" for Telegram/Discord:
 1. Launcher shows "🔐 Pair Device" button
 2. User clicks to open device management modal
 3. Pending devices are listed automatically

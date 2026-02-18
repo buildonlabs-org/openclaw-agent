@@ -1,37 +1,36 @@
-OpenClaw Gateway - Device Pairing Update
-=========================================
+OpenClaw Gateway - Device Pairing Solution
+==========================================
 
 KEY CHANGES:
 -----------
 1. Gateway auto-generates secure token and displays it in logs
-2. Device management API added for web-based pairing (no CLI needed!)
+2. Device management API added for web-based pairing
+3. **CRITICAL: Gateway now auto-configures to bypass device pairing**
 
 
 DEVICE PAIRING SOLUTION:
 ------------------------
-The container now includes a device management API that eliminates the need
-for manual CLI commands. Users can approve device pairing requests through
-the launcher web UI.
+The container automatically configures the gateway to bypass device pairing by
+setting `gateway.controlUi.allowInsecureAuth=true` during startup.
 
-**New API Endpoints:**
+**Why this works:**
+- OpenClaw's Control UI normally requires device pairing for security
+- Setting `allowInsecureAuth=true` bypasses the pairing requirement
+- Gateway auth is still enforced via bearer token (secure)
+- This matches the approach used by other Railway templates
+
+**What happens on startup:**
+1. Container runs: `openclaw config set gateway.controlUi.allowInsecureAuth true`
+2. Container runs: `openclaw config set gateway.trustedProxies ["127.0.0.1"]`
+3. Gateway starts with token auth enabled
+4. Users can connect immediately without device pairing
+
+**Fallback Device Management API:**
+If pairing is still needed for specific channels (Telegram/Discord):
   GET  /api/devices          → List all devices (pending and approved)
   POST /api/devices/approve  → Approve a device by requestId
 
-**How It Works:**
-1. User connects to gateway from browser/client
-2. OpenClaw creates pending device pairing request
-3. Launcher UI shows "🔐 Pair Device" button
-4. User clicks to see pending devices
-5. User clicks "Approve" next to pending device
-6. Device is approved instantly via API
-7. User refreshes and connection works
-
-**Benefits:**
-✓ No manual CLI access needed
-✓ Non-technical user friendly
-✓ Real-time device approval
-✓ Works with Railway deployments
-✓ Launcher handles everything via web UI
+Launcher UI shows "🔐 Pair Device" button for Telegram/Discord channel pairing.
 
 
 AUTHENTICATION:

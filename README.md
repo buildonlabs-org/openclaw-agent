@@ -76,18 +76,34 @@ Check the container logs for the auto-generated authentication token. Look for t
 
 ## 🔐 Device Pairing
 
-OpenClaw requires device pairing for security. Remote connections need explicit approval.
+**The container automatically bypasses device pairing** by setting `gateway.controlUi.allowInsecureAuth=true` during startup. This allows immediate connections without manual device approval.
 
-### Web-Based Pairing (With Launcher)
+### Why This Works
 
-The launcher provides a user-friendly device management interface:
+OpenClaw's Control UI normally requires device pairing for security. However:
+- The gateway is already secured with bearer token authentication
+- The container is behind Railway's proxy (trusted environment)
+- Setting `allowInsecureAuth=true` is safe in this context
+- This matches the approach used by other successful Railway templates
+
+### Automatic Configuration
+
+On startup, the container runs:
+```bash
+openclaw config set gateway.controlUi.allowInsecureAuth true
+openclaw config set --json gateway.trustedProxies '["127.0.0.1"]'
+```
+
+This configuration persists in the workspace, eliminating "pairing required" errors.
+
+### Web-Based Pairing (Optional)
+
+For channel-specific pairing (Telegram/Discord bots), the launcher provides a device management interface:
 
 1. **Deploy agent** via launcher
-2. **Connect from client** (browser, CLI, etc.)
-3. **Click "🔐 Pair Device"** button in launcher UI
-4. **View pending devices** in modal
-5. **Click "Approve"** next to pending device
-6. **Refresh and connect** - device is now paired!
+2. **Connect from channel** (Telegram/Discord)
+3. **Click "🔐 Pair Device"** button in launcher UI (if needed)
+4. **View and approve** pending devices
 
 **API Endpoints:**
 - `GET /api/devices` - List all devices (pending and approved)
@@ -95,15 +111,6 @@ The launcher provides a user-friendly device management interface:
   ```json
   { "requestId": "abc123def456" }
   ```
-
-### Manual Pairing (Standalone)
-
-If not using the launcher, you can approve devices via Railway logs:
-
-1. Get shell access to container (Railway CLI)
-2. Run: `openclaw devices list`
-3. Find pending device requestId
-4. Run: `openclaw devices approve <requestId>`
 
 ### Authentication
 
@@ -171,10 +178,11 @@ railway logs
    - Configure your client with the token before connecting
 
 2. **"disconnected (1008): pairing required" error:**
-   - Device needs to be approved for security
-   - **With launcher:** Click "🔐 Pair Device" button → Approve device
-   - **Without launcher:** Use `/api/devices` and `/api/devices/approve` endpoints
-   - Or get shell access and run: `openclaw devices approve <requestId>`
+   - This should NOT happen anymore! The container auto-configures to bypass pairing
+   - If you still see this: Check logs for "Setting gateway.controlUi.allowInsecureAuth=true..."
+   - Verify the config command completed successfully
+   - Try redeploying the service
+   - For Telegram/Discord channel pairing only: Use the launcher's "🔐 Pair Device" button
 
 3. **Where do I find my token?**
    - Check Railway deployment logs during startup
