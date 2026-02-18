@@ -36,11 +36,23 @@ RUN mkdir -p /data/workspace /data/.openclaw
 ENV OPENCLAW_WORKSPACE=/data/workspace
 ENV OPENCLAW_STATE_DIR=/data/.openclaw
 
-# Copy runtime files
-COPY start.sh /start.sh
+# Set up Node wrapper application
+WORKDIR /app
+
+# Copy package files
+COPY package.json /app/
+
+# Install Node dependencies for wrapper
+RUN npm install --production
+
+# Copy wrapper source code
+COPY src/ /app/src/
+
+# Copy legacy health.js (backward compatibility)
 COPY health.js /health.js
 
-# Make start script executable
+# Copy start script
+COPY start.sh /start.sh
 RUN chmod +x /start.sh
 
 # Expose port (Railway will override with PORT env var)

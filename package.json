@@ -1,0 +1,27 @@
+{
+  "name": "openclaw-railway-wrapper",
+  "version": "1.0.0",
+  "description": "OpenClaw Gateway wrapper with web setup wizard for Railway",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "keywords": [
+    "openclaw",
+    "railway",
+    "gateway",
+    "ai"
+  ],
+  "author": "BuildOnLabs",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "http-proxy": "^1.18.1",
+    "ws": "^8.16.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

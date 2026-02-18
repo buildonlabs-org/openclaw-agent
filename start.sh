@@ -1,21 +1,19 @@
 #!/bin/bash
 
-# OpenClaw Gateway Startup Script for Railway
-# This script runs both the health/proxy server and the OpenClaw gateway
+# OpenClaw Gateway Wrapper Startup Script for Railway
+# The wrapper handles all gateway configuration and lifecycle management
 
 set -e
 
 # Set default port if not provided by Railway
 export PORT="${PORT:-8080}"
-export OPENCLAW_GATEWAY_PORT="${OPENCLAW_GATEWAY_PORT:-18789}"
 export OPENCLAW_WORKSPACE="${OPENCLAW_WORKSPACE:-/data/workspace}"
 export OPENCLAW_STATE_DIR="${OPENCLAW_STATE_DIR:-/data/.openclaw}"
 
 echo "=============================================="
-echo "🚀 Starting OpenClaw Gateway on Railway"
+echo "🚀 Starting OpenClaw Gateway Wrapper"
 echo "=============================================="
-echo "Public Port: $PORT"
-echo "Gateway Port: $OPENCLAW_GATEWAY_PORT"
+echo "Port: $PORT"
 echo "Workspace: $OPENCLAW_WORKSPACE"
 echo "State Dir: $OPENCLAW_STATE_DIR"
 echo "=============================================="
@@ -32,176 +30,17 @@ if ! command -v openclaw &> /dev/null; then
 fi
 
 echo "✓ OpenClaw CLI found: $(which openclaw)"
+echo "✓ OpenClaw version: $(openclaw --version 2>&1 || echo 'Unable to get version')"
 
-# Check required environment variables
-if [ -z "$OPENAI_API_KEY" ]; then
-    echo "⚠️  WARNING: OPENAI_API_KEY not set"
-    echo "The gateway may not function properly without it."
+# Verify SETUP_PASSWORD is set
+if [ -z "$SETUP_PASSWORD" ]; then
+    echo "⚠️  WARNING: SETUP_PASSWORD not set!"
+    echo "Set SETUP_PASSWORD in Railway Variables to access /setup wizard"
 fi
 
-# Show OpenClaw version
-echo "OpenClaw version: $(openclaw --version 2>&1 || echo 'Unable to get version')"
-
-# Generate or load gateway token (needed for both first-time and subsequent runs)
-if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then
-    echo "✓ Using provided OPENCLAW_GATEWAY_TOKEN from environment"
-else
-    TOKEN_FILE="$OPENCLAW_STATE_DIR/gateway.token"
-    if [ -f "$TOKEN_FILE" ]; then
-        OPENCLAW_GATEWAY_TOKEN=$(cat "$TOKEN_FILE")
-        echo "✓ Loaded gateway token from $TOKEN_FILE"
-    else
-        OPENCLAW_GATEWAY_TOKEN=$(openssl rand -hex 32 2>/dev/null || echo "railway-openclaw-$(date +%s)")
-        echo "$OPENCLAW_GATEWAY_TOKEN" > "$TOKEN_FILE"
-        echo "✓ Generated and saved gateway token to $TOKEN_FILE"
-    fi
-    export OPENCLAW_GATEWAY_TOKEN
-fi
-
-# Check if already configured
-CONFIG_FILE="$OPENCLAW_STATE_DIR/openclaw.json"
-if [ ! -f "$CONFIG_FILE" ]; then
-    echo ""
-    echo "🔧 First-time setup: Running onboarding..."
-    
-    if [ -z "$OPENAI_API_KEY" ]; then
-        echo "❌ ERROR: OPENAI_API_KEY is required for first-time setup"
-        exit 1
-    fi
-    
-    # Determine model
-    MODEL="${OPENAI_MODEL:-gpt-4o-mini}"
-    echo "Configuring with model: $MODEL"
-    
-    # Run onboarding with all necessary flags
-    cd "$OPENCLAW_WORKSPACE"
-    openclaw onboard \
-        --non-interactive \
-        --accept-risk \
-        --json \
-        --no-install-daemon \
-        --skip-health \
-        --workspace "$OPENCLAW_WORKSPACE" \
-        --gateway-bind loopback \
-        --gateway-port "$OPENCLAW_GATEWAY_PORT" \
-        --gateway-auth token \
-        --gateway-token "$OPENCLAW_GATEWAY_TOKEN" \
-        --auth-choice openai-api-key \
-        --openai-api-key "$OPENAI_API_KEY" \
-        --flow quickstart
-    
-    ONBOARD_EXIT=$?
-    
-    if [ $ONBOARD_EXIT -eq 0 ] || [ -f "$CONFIG_FILE" ]; then
-        echo "✓ Onboarding completed (exit code: $ONBOARD_EXIT)"
-        
-        # Post-onboarding configuration (critical for chat to work!)
-        echo "Applying post-onboarding configuration..."
-        
-        # Set gateway token in config file
-        echo "Setting gateway.auth.token in config..."
-        openclaw config set gateway.auth.token "$OPENCLAW_GATEWAY_TOKEN" || echo "Warning: Could not set gateway token in config"
-        
-        # Set the model AFTER onboarding
-        echo "Setting model to $MODEL..."
-        openclaw models set "$MODEL" || echo "Warning: Could not set model"
-        
-        echo "✓ Post-onboarding configuration completed"
-    else
-        echo "❌ Onboarding failed with exit code $ONBOARD_EXIT"
-        exit 1
-    fi
-else
-    echo "✓ Gateway already configured (found $CONFIG_FILE)"
-fi
-
-# Configure gateway settings to bypass device pairing
+# Start the wrapper server (this handles gateway lifecycle)
 echo ""
-echo "Configuring gateway settings..."
-cd "$OPENCLAW_WORKSPACE"
+echo "Starting wrapper server on port $PORT..."
+cd /app
+exec node src/server.js
 
-# Set gateway token in config (critical!)
-if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then
-    echo "Setting gateway.auth.token in config..."
-    openclaw config set gateway.auth.token "$OPENCLAW_GATEWAY_TOKEN" || echo "Warning: Could not set gateway token"
-fi
-
-# Set allowInsecureAuth to bypass device pairing (key setting!)
-echo "Setting gateway.controlUi.allowInsecureAuth=true..."
-openclaw config set gateway.controlUi.allowInsecureAuth true || echo "Warning: Could not set allowInsecureAuth"
-
-# Set trusted proxies
-echo "Setting gateway.trustedProxies..."
-openclaw config set --json gateway.trustedProxies '["127.0.0.1"]' || echo "Warning: Could not set trustedProxies"
-
-echo "✓ Gateway configuration completed"
-
-# Start OpenClaw gateway in the background
-echo ""
-echo "Starting OpenClaw gateway on port $OPENCLAW_GATEWAY_PORT..."
-echo "Working directory: $OPENCLAW_WORKSPACE"
-
-# Build gateway command with optional auth settings
-# Use 'run' subcommand for foreground operation and add flags to skip pairing
-GATEWAY_CMD="openclaw gateway run --port $OPENCLAW_GATEWAY_PORT --bind loopback --allow-unconfigured --dev"
-
-# Add authentication options based on environment variables
-if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then
-    echo "✓ Using provided token for authentication"
-    GATEWAY_CMD="$GATEWAY_CMD --auth token --token $OPENCLAW_GATEWAY_TOKEN"
-elif [ -n "$OPENCLAW_PASSWORD" ]; then
-    echo "✓ Using provided password for authentication"
-    GATEWAY_CMD="$GATEWAY_CMD --auth password --password $OPENCLAW_PASSWORD"
-else
-    # Generate a token automatically if none provided
-    echo "⚠️  No OPENCLAW_GATEWAY_TOKEN or OPENCLAW_PASSWORD set"
-    echo "Generating temporary token for this session..."
-    TEMP_TOKEN=$(openssl rand -hex 32 2>/dev/null || echo "railway-openclaw-$(date +%s)")
-    echo "✓ Generated token: $TEMP_TOKEN"
-    echo ""
-    echo "🔑 Copy this token to connect to your gateway:"
-    echo "   $TEMP_TOKEN"
-    echo ""
-    echo "For persistent token, set OPENCLAW_GATEWAY_TOKEN environment variable."
-    GATEWAY_CMD="$GATEWAY_CMD --auth token --token $TEMP_TOKEN"
-fi
-
-# Change to workspace directory and start gateway
-cd "$OPENCLAW_WORKSPACE"
-echo "Command: $GATEWAY_CMD"
-$GATEWAY_CMD > /tmp/openclaw-gateway.log 2>&1 &
-
-GATEWAY_PID=$!
-echo "✓ Gateway process started (PID: $GATEWAY_PID)"
-
-# Wait for gateway to initialize and check if it's running
-echo "Waiting for gateway to initialize..."
-for i in {1..30}; do
-    if ! kill -0 $GATEWAY_PID 2>/dev/null; then
-        echo "❌ Gateway process died. Logs:"
-        cat /tmp/openclaw-gateway.log
-        exit 1
-    fi
-    
-    # Check if the port is actually listening
-    if curl -s http://127.0.0.1:$OPENCLAW_GATEWAY_PORT/health >/dev/null 2>&1; then
-        echo "✓ Gateway is responding on port $OPENCLAW_GATEWAY_PORT"
-        break
-    fi
-    
-    if [ $i -eq 30 ]; then
-        echo "❌ Gateway did not become ready in time. Logs:"
-        cat /tmp/openclaw-gateway.log
-        echo ""
-        echo "Process status:"
-        ps aux | grep openclaw || echo "No openclaw process found"
-        exit 1
-    fi
-    
-    sleep 1
-done
-
-# Start the health/proxy server (this becomes PID 1)
-echo ""
-echo "Starting health & proxy server on port $PORT..."
-exec node /health.js

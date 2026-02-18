@@ -1,0 +1,274 @@
+# OpenClaw Gateway - Railway Deployment
+
+Deploy an OpenClaw AI gateway to Railway with a **web-based setup wizard** — no command-line configuration needed!
+
+## ✨ Features
+
+- 🧙 **Web Setup Wizard** at `/setup` - Configure through your browser
+- 🤖 **Multi-Provider Support** - OpenAI, Anthropic, Google Gemini, OpenRouter
+- ⚙️ **Auto-Configuration** - Gateway settings applied automatically
+- 💬 **Channel Integration** - Connect Telegram, Discord bots
+- 🔐 **Device Management** - Approve pairing requests via web UI
+- 💾 **Persistent State** - Configuration survives redeploys
+- 🔄 **Backward Compatible** - Works with existing launcher apps
+
+## 🚀 Quick Start
+
+### Railway Deployment
+
+1. **Deploy to Railway:**
+   - Fork this repository
+   - Connect to Railway
+   - Railway auto-detects Dockerfile and deploys
+
+2. **Set Required Environment Variable:**
+   ```
+   SETUP_PASSWORD=your-secure-password-here
+   ```
+   This password protects access to the `/setup` wizard.
+
+3. **Configure via Web Wizard:**
+   - Visit `https://your-app.railway.app/setup`
+   - Enter your `SETUP_PASSWORD` when prompted (Basic Auth)
+   - Follow the 3-step wizard:
+     - **Step 1**: Choose AI provider and enter API key
+     - **Step 2**: Connect Telegram/Discord (optional)
+     - **Step 3**: Review and run setup
+   - Gateway starts automatically!
+
+4. **Access Your Gateway:**
+   - `/openclaw` - OpenClaw Control UI
+   - `/setup` - Configuration wizard (password protected)
+   - `/api/devices` - Device management API (for launcher apps)
+
+### Local Testing
+
+```bash
+# Build the image
+docker build -t openclaw-gateway .
+
+# Run locally
+docker run -p 8080:8080 \
+  -e PORT=8080 \
+  -e SETUP_PASSWORD=test123 \
+  -v $(pwd)/.data:/data \
+  openclaw-gateway
+```
+
+Visit http://localhost:8080/setup (password: `test123`) to configure.
+
+## � Key Configuration Details
+
+This deployment configuration is based on analysis of the working [arjunkomath/openclaw-railway-template](https://github.com/arjunkomath/openclaw-railway-template). Critical insights for chat functionality:
+
+1. **Gateway Token Persistence**: Token is generated once and saved to `/data/.openclaw/gateway.token`
+   - Ensures consistency across restarts
+   - Must be set in BOTH the config file AND as a command-line flag
+   
+2. **Post-Onboarding Configuration**: After `openclaw onboard`, we explicitly:
+   - Set `gateway.auth.token` in config file (critical for gateway to read credentials)
+   - Set `gateway.controlUi.allowInsecureAuth=true` (bypasses device pairing for Control UI)
+   - Configure `gateway.trustedProxies` for Railway's networking
+
+3. **Model Configuration**: Model is set AFTER onboarding completes using `openclaw models set`
+   - Setting during onboarding doesn't persist properly
+   - Ensures chat uses specified model instead of defaulting to Claude
+
+4. **Essential Onboarding Flags**: Using `--json`, `--accept-risk`, `--no-install-daemon`, and `--skip-health`
+   - Ensures reliable non-interactive initialization
+   - Prevents daemon conflicts and health check timeouts
+
+**Without these steps**, the gateway may:
+- Default to Claude model despite providing OpenAI credentials (causing "chat not responding")
+- Require device pairing for Control UI connections
+- Fail to authenticate properly across restarts
+
+## �📋 Environment Variables
+
+### Required
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `OPENAI_API_KEY` | OpenAI API key for AI features | `sk-proj-...` |
+
+### Optional
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `PORT` | HTTP port (Railway sets this) | `8080` |
+| `OPENCLAW_GATEWAY_PORT` | Internal gateway port | `18789` |
+| `OPENCLAW_WORKSPACE` | Workspace directory | `/data/workspace` |
+| `OPENCLAW_STATE_DIR` | State/config directory | `/data/.openclaw` |
+| `OPENAI_MODEL` | OpenAI model to use | `gpt-4o-mini` |
+| `OPENCLAW_GATEWAY_TOKEN` | Gateway authentication token | - |
+| `OPENCLAW_PASSWORD` | Gateway authentication password | - |
+| `DATABASE_URL` | PostgreSQL connection (if needed) | - |
+| `REDIS_URL` | Redis connection (if needed) | - |
+
+## 🔧 First-Time Setup
+
+On first deployment, the container automatically runs `openclaw onboard` to:
+1. Configure OpenAI API credentials
+2. Set the default model (from `OPENAI_MODEL` env var)
+3. Configure gateway authentication
+4. Set up workspace and state directories
+
+The configuration persists in `/data/.openclaw/openclaw.json` (mounted volume on Railway).
+
+## 🔐 Device Pairing
+
+**The container automatically bypasses device pairing** by setting `gateway.controlUi.allowInsecureAuth=true` during startup. This allows immediate connections without manual device approval.
+
+### Why This Works
+
+OpenClaw's Control UI normally requires device pairing for security. However:
+- The gateway is already secured with bearer token authentication
+- The container is behind Railway's proxy (trusted environment)
+- Setting `allowInsecureAuth=true` is safe in this context
+- This matches the approach used by other successful Railway templates
+
+### Automatic Configuration
+
+On startup, the container runs:
+```bash
+openclaw config set gateway.controlUi.allowInsecureAuth true
+openclaw config set --json gateway.trustedProxies '["127.0.0.1"]'
+```
+
+This configuration persists in the workspace, eliminating "pairing required" errors.
+
+### Web-Based Pairing (Optional)
+
+For channel-specific pairing (Telegram/Discord bots), the launcher provides a device management interface:
+
+1. **Deploy agent** via launcher
+2. **Connect from channel** (Telegram/Discord)
+3. **Click "🔐 Pair Device"** button in launcher UI (if needed)
+4. **View and approve** pending devices
+
+**API Endpoints:**
+- `GET /api/devices` - List all devices (pending and approved)
+- `POST /api/devices/approve` - Approve device by requestId
+  ```json
+  { "requestId": "abc123def456" }
+  ```
+
+### Authentication
+
+**The OpenClaw gateway requires authentication.** You have three options:
+
+1. **Set a persistent token** (recommended for production):
+   ```bash
+   OPENCLAW_GATEWAY_TOKEN=your-secret-token-here
+   ```
+   Generate a secure token: `openssl rand -hex 32`
+
+2. **Set a password**:
+   ```bash
+   OPENCLAW_PASSWORD=your-password
+   ```
+
+3. **Use auto-generated token** (default):
+   - If neither variable is set, the container automatically generates a temporary token
+   - The token is displayed in the startup logs
+   - Note: Token changes on each restart unless you set `OPENCLAW_GATEWAY_TOKEN`
+
+## 🏗️ Architecture
+
+```
+Railway (Public) → :$PORT (health.js proxy)
+                      ↓
+                   :18789 (OpenClaw Gateway)
+                      ↓
+                   /data/workspace (persistent data)
+```
+
+- **health.js**: Node.js proxy server
+  - Handles `/health` endpoint for Railway health checks
+  - Proxies all other traffic to OpenClaw gateway
+  - Supports WebSocket connections
+  
+- **OpenClaw Gateway**: Runs on internal port 18789
+  - Handles AI agent requests
+  - Manages workspace and sessions
+  
+- **Workspace**: `/data/workspace`
+  - Persistent storage for agent data
+  - Can be attached to Railway volume for persistence
+
+## 🔧 Troubleshooting
+
+### Check if gateway is running
+```bash
+# Inside container
+curl http://localhost:8080/health
+```
+
+### View gateway logs
+```bash
+# In Railway dashboard
+railway logs
+```
+
+### Common Issues
+
+1. **"disconnected (1008): unauthorized" error:**
+   - You need to use the gateway's authentication token
+   - Check Railway logs for "🔑 Copy this token to connect to your gateway:"
+   - Or set `OPENCLAW_GATEWAY_TOKEN` env var for persistent token
+   - Configure your client with the token before connecting
+
+2. **"disconnected (1008): pairing required" error:**
+   - This should NOT happen anymore! The container auto-configures to bypass pairing
+   - If you still see this: Check logs for "Setting gateway.controlUi.allowInsecureAuth=true..."
+   - Verify the config command completed successfully
+   - Try redeploying the service
+   - For Telegram/Discord channel pairing only: Use the launcher's "🔐 Pair Device" button
+
+3. **Where do I find my token?**
+   - Check Railway deployment logs during startup
+   - Look for the startup output with the 🔑 emoji
+   - If using launcher: token is in the launcher UI with copy button
+
+4. **Gateway not starting:**
+   - Check if `OPENAI_API_KEY` is set
+   - View logs: `cat /tmp/openclaw-gateway.log`
+
+2. **502 Bad Gateway:**
+   - Gateway may still be initializing (wait 10-30 seconds)
+   - Check gateway health: `curl http://localhost:18789/health`
+
+3. **Port binding issues:**
+   - Ensure Railway's `PORT` env var is being used
+   - Default is 8080 if not set
+
+## 📦 Files
+
+- `Dockerfile` - Container image definition
+- `start.sh` - Startup script (runs gateway + proxy)
+- `health.js` - Health check & proxy server
+- `.dockerignore` - Files excluded from image
+
+## 🔐 Security Notes
+
+- Never commit `.env` files with real API keys
+- Use Railway's environment variables for secrets
+- The gateway runs as root in the container (consider adding a non-root user for production)
+
+## 📊 Monitoring
+
+Railway provides:
+- Built-in health checks via `/health`
+- Automatic restarts on failure
+- Logs aggregation
+- Metrics dashboard
+
+## 🤝 Support
+
+For OpenClaw issues:
+- Documentation: https://docs.openclaw.ai
+- GitHub: https://github.com/openclaw/openclaw
+
+For Railway issues:
+- Documentation: https://docs.railway.app
+- Discord: https://discord.gg/railway

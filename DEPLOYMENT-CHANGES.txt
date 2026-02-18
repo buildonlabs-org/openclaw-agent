@@ -1,0 +1,118 @@
+========================================
+OPENCLAW GATEWAY - DEPLOYMENT CHANGES
+========================================
+
+SUMMARY
+-------
+The OpenClaw gateway now uses a web-based setup wizard instead of environment 
+variable configuration. Frontend launcher apps no longer need to manage gateway 
+tokens - authentication is handled automatically by the wrapper server.
+
+WHAT CHANGED
+------------
+1. Added Express.js wrapper server (src/server.js)
+   - Manages gateway lifecycle (start, restart, monitoring)
+   - Auto-injects authentication token on all gateway requests
+   - Provides /setup wizard for web-based configuration
+   
+2. Created setup wizard UI (src/public/setup.html)
+   - 3-step configuration: Provider → Channels → Review
+   - AI provider selection (OpenAI, Anthropic, Google, OpenRouter)
+   - Telegram/Discord bot setup
+   - Device pairing approval interface
+   - Gateway diagnostics (doctor, reset)
+   
+3. Modified deployment files
+   - Dockerfile: Added Node.js dependencies installation
+   - start.sh: Simplified to launch wrapper server
+   - package.json: Added express, http-proxy, ws dependencies
+
+OLD DEPLOYMENT (Environment Variables)
+--------------------------------------
+Required variables:
+- OPENAI_API_KEY (or other provider key)
+- MODEL
+- TELEGRAM_BOT_TOKEN (optional)
+- DISCORD_BOT_TOKEN (optional)
+- GATEWAY_TOKEN (optional, auto-generated if missing)
+
+Frontend app: Had to send Authorization header with gateway token
+
+NEW DEPLOYMENT (Setup Wizard)
+------------------------------
+Required variables:
+- SETUP_PASSWORD (protects /setup wizard access)
+
+Optional variables:
+- PORT (auto-set by Railway)
+- Other system settings (see README.md)
+
+Frontend app: No changes needed! Token automatically injected by wrapper
+
+DEPLOYMENT STEPS
+----------------
+1. Set environment variable in Railway:
+   SETUP_PASSWORD=your-secure-password
+   
+2. Deploy (Railway auto-builds from Dockerfile)
+
+3. Visit https://your-app.railway.app/setup
+   - Enter SETUP_PASSWORD when prompted (Basic Auth)
+   - Complete 3-step wizard:
+     * Step 1: Choose AI provider and enter API key
+     * Step 2: Configure Telegram/Discord bots (optional)
+     * Step 3: Review and run setup
+   - Gateway starts automatically
+
+4. Use your gateway:
+   - Control UI: https://your-app.railway.app/openclaw
+   - Setup wizard: https://your-app.railway.app/setup
+   - API endpoints: https://your-app.railway.app/api/*
+
+FRONTEND APP CHANGES
+--------------------
+NONE REQUIRED!
+
+The wrapper server acts as an authenticating reverse proxy:
+- Frontend makes requests to Railway URL (no token in headers)
+- Wrapper intercepts and adds: Authorization: Bearer <gateway-token>
+- Gateway receives authenticated request
+- Response flows back through wrapper to frontend
+
+Example:
+  Before: fetch(url, { headers: { 'Authorization': 'Bearer xyz...' }})
+  After:  fetch(url)  // Token automatically added by wrapper
+
+BACKWARD COMPATIBILITY
+----------------------
+✓ /api/devices endpoints still work (launcher device management)
+✓ WebSocket connections proxied correctly
+✓ Existing launcher apps work without modifications
+✓ Gateway Control UI accessible without manual token entry
+
+BENEFITS
+--------
+✓ User-friendly web configuration (no CLI knowledge needed)
+✓ Configuration persists across redeploys
+✓ Simplified deployment (one env var vs many)
+✓ Management features (doctor, pairing approval, reset)
+✓ Frontend apps automatically authenticated
+✓ Better security (token not exposed to frontend)
+
+ARCHITECTURE
+------------
+User → Railway → Wrapper (Express.js) → Gateway (OpenClaw)
+                     ↓
+                 /setup wizard
+                 Token injection
+                 Device management
+
+FILES TO REVIEW
+---------------
+- README.md - Complete documentation
+- src/server.js - Wrapper server implementation (905 lines)
+- src/public/setup.html - Setup wizard UI (520 lines)
+- Dockerfile - Build configuration
+- package.json - Dependencies
+
+========================================
