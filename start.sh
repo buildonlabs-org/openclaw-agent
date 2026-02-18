@@ -54,14 +54,32 @@ echo ""
 echo "Starting OpenClaw gateway on port $OPENCLAW_GATEWAY_PORT..."
 echo "Working directory: $OPENCLAW_WORKSPACE"
 
+# Build gateway command with optional auth settings
+GATEWAY_CMD="openclaw gateway --port $OPENCLAW_GATEWAY_PORT --bind loopback --allow-unconfigured --dev"
+
+# Add authentication options based on environment variables
+if [ -n "$OPENCLAW_NO_AUTH" ]; then
+    echo "✓ Running with authentication disabled (OPENCLAW_NO_AUTH is set)"
+    GATEWAY_CMD="$GATEWAY_CMD --no-auth"
+elif [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then
+    echo "✓ Running with token authentication"
+    GATEWAY_CMD="$GATEWAY_CMD --token $OPENCLAW_GATEWAY_TOKEN"
+elif [ -n "$OPENCLAW_PASSWORD" ]; then
+    echo "✓ Running with password authentication"
+    GATEWAY_CMD="$GATEWAY_CMD --password $OPENCLAW_PASSWORD"
+else
+    echo "⚠️  No authentication configured. Set one of:"
+    echo "   - OPENCLAW_NO_AUTH=1 (disable auth)"
+    echo "   - OPENCLAW_GATEWAY_TOKEN=<token> (token auth)"
+    echo "   - OPENCLAW_PASSWORD=<password> (password auth)"
+    echo "Attempting to start with --no-auth flag..."
+    GATEWAY_CMD="$GATEWAY_CMD --no-auth"
+fi
+
 # Change to workspace directory and start gateway
 cd "$OPENCLAW_WORKSPACE"
-openclaw gateway \
-    --port "$OPENCLAW_GATEWAY_PORT" \
-    --bind loopback \
-    --allow-unconfigured \
-    --dev \
-    > /tmp/openclaw-gateway.log 2>&1 &
+echo "Command: $GATEWAY_CMD"
+$GATEWAY_CMD > /tmp/openclaw-gateway.log 2>&1 &
 
 GATEWAY_PID=$!
 echo "✓ Gateway process started (PID: $GATEWAY_PID)"

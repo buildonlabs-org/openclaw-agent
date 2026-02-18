@@ -1,0 +1,47 @@
+OpenClaw Agent - Authentication Update
+=======================================
+
+ISSUE FIXED:
+-----------
+Error: "disconnected (1008): unauthorized"
+This gateway requires auth. Add a token or password, then click Connect.
+
+The OpenClaw gateway was starting without authentication configured, causing
+connection failures.
+
+
+WHAT CHANGED:
+------------
+Updated start.sh to automatically handle authentication based on environment
+variables. The gateway now supports three authentication modes:
+
+1. No Authentication (--no-auth flag)
+2. Token Authentication  
+3. Password Authentication
+
+
+HOW TO FIX:
+----------
+Add ONE of these environment variables to your deployment:
+
+  OPENCLAW_NO_AUTH=1
+    → Disables authentication (use for testing/internal deployments)
+
+  OPENCLAW_GATEWAY_TOKEN=your-secret-token
+    → Token-based authentication (recommended for production)
+
+  OPENCLAW_PASSWORD=your-password
+    → Password authentication
+
+If no authentication variable is set, the container will default to --no-auth.
+
+
+FILES MODIFIED:
+--------------
+- start.sh: Added authentication logic to gateway startup
+- README.md: Added authentication documentation and troubleshooting
+
+
+DEPLOYMENT ACTION REQUIRED:
+--------------------------
+Add authentication environment variable → Redeploy service

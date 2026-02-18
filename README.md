@@ -14,6 +14,7 @@ docker build -t openclaw-gateway .
 docker run -p 8080:8080 \
   -e PORT=8080 \
   -e OPENAI_API_KEY=your-api-key \
+  -e OPENCLAW_NO_AUTH=1 \
   openclaw-gateway
 ```
 
@@ -27,6 +28,7 @@ Visit http://localhost:8080/health to verify it's running.
    ```
    OPENAI_API_KEY=sk-...
    OPENAI_MODEL=gpt-4o-mini (optional, defaults to gpt-4)
+   OPENCLAW_NO_AUTH=1 (disable auth for testing, or set a token)
    ```
 
 3. **Deploy from GitHub:**
@@ -54,8 +56,32 @@ Visit http://localhost:8080/health to verify it's running.
 | `OPENCLAW_GATEWAY_PORT` | Internal gateway port | `18789` |
 | `OPENCLAW_WORKSPACE` | Workspace directory | `/data/workspace` |
 | `OPENAI_MODEL` | OpenAI model to use | `gpt-4` |
+| `OPENCLAW_NO_AUTH` | Disable gateway authentication | - |
+| `OPENCLAW_GATEWAY_TOKEN` | Gateway authentication token | - |
+| `OPENCLAW_PASSWORD` | Gateway authentication password | - |
 | `DATABASE_URL` | PostgreSQL connection (if needed) | - |
 | `REDIS_URL` | Redis connection (if needed) | - |
+
+### Authentication
+
+The OpenClaw gateway requires authentication by default. Configure one of these options:
+
+1. **Disable authentication** (for testing/internal use):
+   ```bash
+   OPENCLAW_NO_AUTH=1
+   ```
+
+2. **Token authentication** (recommended):
+   ```bash
+   OPENCLAW_GATEWAY_TOKEN=your-secret-token
+   ```
+
+3. **Password authentication**:
+   ```bash
+   OPENCLAW_PASSWORD=your-password
+   ```
+
+If no authentication is configured, the container will attempt to start with `--no-auth` flag.
 
 ## 🏗️ Architecture
 
@@ -96,7 +122,13 @@ railway logs
 
 ### Common Issues
 
-1. **Gateway not starting:**
+1. **"disconnected (1008): unauthorized" error:**
+   - The gateway requires authentication
+   - Set `OPENCLAW_NO_AUTH=1` to disable auth (for testing)
+   - Or set `OPENCLAW_GATEWAY_TOKEN` or `OPENCLAW_PASSWORD`
+   - Restart the service after updating environment variables
+
+2. **Gateway not starting:**
    - Check if `OPENAI_API_KEY` is set
    - View logs: `cat /tmp/openclaw-gateway.log`
 
