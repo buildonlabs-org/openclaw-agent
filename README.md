@@ -14,7 +14,6 @@ docker build -t openclaw-gateway .
 docker run -p 8080:8080 \
   -e PORT=8080 \
   -e OPENAI_API_KEY=your-api-key \
-  -e OPENCLAW_NO_AUTH=1 \
   openclaw-gateway
 ```
 
@@ -28,7 +27,7 @@ Visit http://localhost:8080/health to verify it's running.
    ```
    OPENAI_API_KEY=sk-...
    OPENAI_MODEL=gpt-4o-mini (optional, defaults to gpt-4)
-   OPENCLAW_NO_AUTH=1 (disable auth for testing, or set a token)
+   OPENCLAW_GATEWAY_TOKEN=your-token (optional, for auth)
    ```
 
 3. **Deploy from GitHub:**
@@ -56,7 +55,6 @@ Visit http://localhost:8080/health to verify it's running.
 | `OPENCLAW_GATEWAY_PORT` | Internal gateway port | `18789` |
 | `OPENCLAW_WORKSPACE` | Workspace directory | `/data/workspace` |
 | `OPENAI_MODEL` | OpenAI model to use | `gpt-4` |
-| `OPENCLAW_NO_AUTH` | Disable gateway authentication | - |
 | `OPENCLAW_GATEWAY_TOKEN` | Gateway authentication token | - |
 | `OPENCLAW_PASSWORD` | Gateway authentication password | - |
 | `DATABASE_URL` | PostgreSQL connection (if needed) | - |
@@ -64,24 +62,19 @@ Visit http://localhost:8080/health to verify it's running.
 
 ### Authentication
 
-The OpenClaw gateway requires authentication by default. Configure one of these options:
+The OpenClaw gateway authentication is optional. For production use, configure one of these:
 
-1. **Disable authentication** (for testing/internal use):
-   ```bash
-   OPENCLAW_NO_AUTH=1
-   ```
-
-2. **Token authentication** (recommended):
+1. **Token authentication** (recommended):
    ```bash
    OPENCLAW_GATEWAY_TOKEN=your-secret-token
    ```
 
-3. **Password authentication**:
+2. **Password authentication**:
    ```bash
    OPENCLAW_PASSWORD=your-password
    ```
 
-If no authentication is configured, the container will attempt to start with `--no-auth` flag.
+3. **No authentication**: Simply don't set either variable (suitable for internal/testing environments)
 
 ## 🏗️ Architecture
 
@@ -123,9 +116,9 @@ railway logs
 ### Common Issues
 
 1. **"disconnected (1008): unauthorized" error:**
-   - The gateway requires authentication
-   - Set `OPENCLAW_NO_AUTH=1` to disable auth (for testing)
-   - Or set `OPENCLAW_GATEWAY_TOKEN` or `OPENCLAW_PASSWORD`
+   - Your client is sending auth credentials but gateway doesn't expect them
+   - Set `OPENCLAW_GATEWAY_TOKEN` or `OPENCLAW_PASSWORD` to enable auth
+   - Or configure your client to connect without authentication
    - Restart the service after updating environment variables
 
 2. **Gateway not starting:**

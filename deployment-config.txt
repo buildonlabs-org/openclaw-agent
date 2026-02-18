@@ -1,47 +1,54 @@
-OpenClaw Agent - Authentication Update
-=======================================
+OpenClaw Agent - Required Deployment Update
+============================================
 
-ISSUE FIXED:
------------
-Error: "disconnected (1008): unauthorized"
-This gateway requires auth. Add a token or password, then click Connect.
-
-The OpenClaw gateway was starting without authentication configured, causing
-connection failures.
+ACTION REQUIRED:
+---------------
+Redeploy the Railway service to apply authentication fix.
 
 
-WHAT CHANGED:
-------------
-Updated start.sh to automatically handle authentication based on environment
-variables. The gateway now supports three authentication modes:
-
-1. No Authentication (--no-auth flag)
-2. Token Authentication  
-3. Password Authentication
-
-
-HOW TO FIX:
-----------
-Add ONE of these environment variables to your deployment:
-
-  OPENCLAW_NO_AUTH=1
-    → Disables authentication (use for testing/internal deployments)
-
-  OPENCLAW_GATEWAY_TOKEN=your-secret-token
-    → Token-based authentication (recommended for production)
-
-  OPENCLAW_PASSWORD=your-password
-    → Password authentication
-
-If no authentication variable is set, the container will default to --no-auth.
-
-
-FILES MODIFIED:
+WHAT WAS FIXED:
 --------------
-- start.sh: Added authentication logic to gateway startup
-- README.md: Added authentication documentation and troubleshooting
+✓ Removed invalid --no-auth flag (was causing gateway crash)
+✓ Implemented proper authentication handling
+✓ Gateway now starts successfully with or without auth
 
 
-DEPLOYMENT ACTION REQUIRED:
---------------------------
-Add authentication environment variable → Redeploy service
+DEPLOYMENT STEPS:
+-----------------
+
+1. GO TO RAILWAY DASHBOARD
+   → Select your openclaw-agent deployment
+
+2. TRIGGER NEW DEPLOYMENT
+   → Push this update to main branch (will auto-deploy)
+   OR
+   → Manually trigger redeploy in Railway dashboard
+
+3. VERIFY ENVIRONMENT VARIABLES
+   Required:
+   ✓ OPENAI_API_KEY=sk-...
+
+   Optional (no changes needed unless you want auth):
+   - OPENCLAW_GATEWAY_TOKEN=<token>  (for secured access)
+   - OPENCLAW_PASSWORD=<password>    (alternative auth)
+   - OPENAI_MODEL=gpt-4o-mini        (cost optimization)
+
+4. MONITOR DEPLOYMENT
+   → Check logs for "✓ Gateway process started"
+   → Verify /health endpoint returns 200 OK
+   → Test WebSocket connection
+
+
+EXPECTED RESULT:
+----------------
+Gateway starts without authentication errors.
+No "disconnected (1008): unauthorized" errors.
+WebSocket connections work immediately.
+
+
+IF STILL SEEING ERRORS:
+-----------------------
+- Wait 30 seconds for gateway initialization
+- Check Railway logs for detailed error messages  
+- Verify OPENAI_API_KEY is set correctly
+- Ensure you're using the latest deployment (not cached build)
