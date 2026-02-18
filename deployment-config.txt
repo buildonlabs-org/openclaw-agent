@@ -12,7 +12,21 @@ WHAT WAS FIXED:
 ✓ Auto-generates temporary token if none provided
 ✓ Gateway starts successfully with authentication
 ✓ **CRITICAL: Auto-configures to bypass device pairing**
+✓ **NEW: Automatic onboarding with OpenAI credentials**
 ✓ Device management API for channel-specific pairing (Telegram/Discord)
+
+
+AUTOMATIC ONBOARDING (NEW):
+---------------------------
+On first deployment, container automatically runs onboarding:
+1. Detects if openclaw.json exists
+2. If not, runs: openclaw onboard --non-interactive
+3. Configures with OPENAI_API_KEY and OPENAI_MODEL
+4. Sets up gateway token authentication
+5. Config persists in Railway volume
+
+This ensures gateway uses OpenAI (gpt-4o-mini by default),
+not Claude as the default.
 
 
 KEY FIX - NO MORE "PAIRING REQUIRED" ERRORS:

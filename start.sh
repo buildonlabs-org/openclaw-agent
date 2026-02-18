@@ -9,6 +9,7 @@ set -e
 export PORT="${PORT:-8080}"
 export OPENCLAW_GATEWAY_PORT="${OPENCLAW_GATEWAY_PORT:-18789}"
 export OPENCLAW_WORKSPACE="${OPENCLAW_WORKSPACE:-/data/workspace}"
+export OPENCLAW_STATE_DIR="${OPENCLAW_STATE_DIR:-/data/.openclaw}"
 
 echo "=============================================="
 echo "🚀 Starting OpenClaw Gateway on Railway"
@@ -16,10 +17,12 @@ echo "=============================================="
 echo "Public Port: $PORT"
 echo "Gateway Port: $OPENCLAW_GATEWAY_PORT"
 echo "Workspace: $OPENCLAW_WORKSPACE"
+echo "State Dir: $OPENCLAW_STATE_DIR"
 echo "=============================================="
 
-# Ensure workspace directories exist
+# Ensure directories exist
 mkdir -p "$OPENCLAW_WORKSPACE"
+mkdir -p "$OPENCLAW_STATE_DIR"
 
 # Verify OpenClaw is installed
 if ! command -v openclaw &> /dev/null; then
@@ -38,6 +41,57 @@ fi
 
 # Show OpenClaw version
 echo "OpenClaw version: $(openclaw --version 2>&1 || echo 'Unable to get version')"
+
+# Check if already configured
+CONFIG_FILE="$OPENCLAW_STATE_DIR/openclaw.json"
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo ""
+    echo "🔧 First-time setup: Running onboarding..."
+    
+    if [ -z "$OPENAI_API_KEY" ]; then
+        echo "❌ ERROR: OPENAI_API_KEY is required for first-time setup"
+        exit 1
+    fi
+    
+    # Generate token if not provided
+    if [ -z "$OPENCLAW_GATEWAY_TOKEN" ]; then
+        TEMP_TOKEN=$(openssl rand -hex 32 2>/dev/null || echo "railway-openclaw-$(date +%s)")
+        export OPENCLAW_GATEWAY_TOKEN="$TEMP_TOKEN"
+        echo "Generated gateway token for onboarding"
+    fi
+    
+    # Determine model
+    MODEL="${OPENAI_MODEL:-gpt-4o-mini}"
+    echo "Configuring with model: $MODEL"
+    
+    # Run onboarding
+    cd "$OPENCLAW_WORKSPACE"
+    openclaw onboard \
+        --non-interactive \
+        --accept-risk \
+        --no-install-daemon \
+        --skip-health \
+        --workspace "$OPENCLAW_WORKSPACE" \
+        --gateway-bind loopback \
+        --gateway-port "$OPENCLAW_GATEWAY_PORT" \
+        --gateway-auth token \
+        --gateway-token "$OPENCLAW_GATEWAY_TOKEN" \
+        --auth-choice openai-api-key \
+        --openai-api-key "$OPENAI_API_KEY" \
+        --flow quickstart
+    
+    if [ $? -eq 0 ]; then
+        echo "✓ Onboarding completed successfully"
+        
+        # Set the model
+        echo "Setting model to $MODEL..."
+        openclaw models set "$MODEL" || echo "Warning: Could not set model"
+    else
+        echo "⚠️  Onboarding completed with warnings (this is often normal)"
+    fi
+else
+    echo "✓ Gateway already configured (found $CONFIG_FILE)"
+fi
 
 # Configure gateway settings to bypass device pairing
 echo ""

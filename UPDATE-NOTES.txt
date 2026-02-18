@@ -1,4 +1,4 @@
-OpenClaw Gateway - Device Pairing Solution
+OpenClaw Gateway - Complete Setup Solution
 ==========================================
 
 KEY CHANGES:
@@ -6,6 +6,25 @@ KEY CHANGES:
 1. Gateway auto-generates secure token and displays it in logs
 2. Device management API added for web-based pairing
 3. **CRITICAL: Gateway now auto-configures to bypass device pairing**
+4. **NEW: Automatic onboarding on first deployment**
+
+
+AUTOMATIC ONBOARDING:
+--------------------
+On first deployment, the container now automatically:
+1. Runs `openclaw onboard --non-interactive`
+2. Configures OpenAI API credentials from OPENAI_API_KEY
+3. Sets default model from OPENAI_MODEL (defaults to gpt-4o-mini)
+4. Configures gateway token authentication
+5. Creates persistent config in /data/.openclaw/openclaw.json
+
+This fixes the issue where gateway defaulted to Claude even with
+OpenAI credentials configured.
+
+**Environment Variables for Onboarding:**
+- OPENAI_API_KEY (required) - Your OpenAI API key
+- OPENAI_MODEL (optional) - Model name (default: gpt-4o-mini)
+- OPENCLAW_GATEWAY_TOKEN (optional) - Auto-generated if not provided
 
 
 DEVICE PAIRING SOLUTION:

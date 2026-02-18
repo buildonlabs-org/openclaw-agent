@@ -34,7 +34,7 @@ Check the container logs for the auto-generated authentication token. Look for t
 2. **Set environment variables in Railway:**
    ```
    OPENAI_API_KEY=sk-...
-   OPENAI_MODEL=gpt-4o-mini (optional, defaults to gpt-4)
+   OPENAI_MODEL=gpt-4o-mini (optional, this is the default)
    OPENCLAW_GATEWAY_TOKEN=$(openssl rand -hex 32) (optional but recommended)
    ```
 
@@ -68,11 +68,22 @@ Check the container logs for the auto-generated authentication token. Look for t
 | `PORT` | HTTP port (Railway sets this) | `8080` |
 | `OPENCLAW_GATEWAY_PORT` | Internal gateway port | `18789` |
 | `OPENCLAW_WORKSPACE` | Workspace directory | `/data/workspace` |
-| `OPENAI_MODEL` | OpenAI model to use | `gpt-4` |
+| `OPENCLAW_STATE_DIR` | State/config directory | `/data/.openclaw` |
+| `OPENAI_MODEL` | OpenAI model to use | `gpt-4o-mini` |
 | `OPENCLAW_GATEWAY_TOKEN` | Gateway authentication token | - |
 | `OPENCLAW_PASSWORD` | Gateway authentication password | - |
 | `DATABASE_URL` | PostgreSQL connection (if needed) | - |
 | `REDIS_URL` | Redis connection (if needed) | - |
+
+## 🔧 First-Time Setup
+
+On first deployment, the container automatically runs `openclaw onboard` to:
+1. Configure OpenAI API credentials
+2. Set the default model (from `OPENAI_MODEL` env var)
+3. Configure gateway authentication
+4. Set up workspace and state directories
+
+The configuration persists in `/data/.openclaw/openclaw.json` (mounted volume on Railway).
 
 ## 🔐 Device Pairing
 

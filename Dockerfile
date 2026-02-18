@@ -30,10 +30,11 @@ ENV PATH="/root/.local/bin:/root/.openclaw/bin:${PATH}"
 RUN openclaw --version
 
 # Create workspace directory
-RUN mkdir -p /data/workspace
+RUN mkdir -p /data/workspace /data/.openclaw
 
 # Set default workspace location
 ENV OPENCLAW_WORKSPACE=/data/workspace
+ENV OPENCLAW_STATE_DIR=/data/.openclaw
 
 # Copy runtime files
 COPY start.sh /start.sh
