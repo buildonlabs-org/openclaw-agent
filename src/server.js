@@ -41,9 +41,8 @@ const INTERNAL_GATEWAY_PORT = Number.parseInt(process.env.INTERNAL_GATEWAY_PORT 
 const INTERNAL_GATEWAY_HOST = process.env.INTERNAL_GATEWAY_HOST ?? "127.0.0.1";
 const GATEWAY_TARGET = `http://${INTERNAL_GATEWAY_HOST}:${INTERNAL_GATEWAY_PORT}`;
 
-// Use Node to run OpenClaw entry point (matches arjunkomath template approach)
-const OPENCLAW_ENTRY = process.env.OPENCLAW_ENTRY?.trim() || "/openclaw/dist/entry.js";
-const OPENCLAW_NODE = process.env.OPENCLAW_NODE?.trim() || "node";
+// Use openclaw CLI binary (installed via install.sh)
+const OPENCLAW_CLI = process.env.OPENCLAW_CLI?.trim() || "openclaw";
 
 let cachedOpenclawVersion = null;
 let cachedChannelsHelp = null;
@@ -51,17 +50,13 @@ let cachedChannelsHelp = null;
 async function getOpenclawInfo() {
   if (!cachedOpenclawVersion) {
     const [version, channelsHelp] = await Promise.all([
-      runCmd(OPENCLAW_NODE, [OPENCLAW_ENTRY, "--version"]),
-      runCmd(OPENCLAW_NODE, [OPENCLAW_ENTRY, "channels", "add", "--help"]),
+      runCmd(OPENCLAW_CLI, ["--version"]),
+      runCmd(OPENCLAW_CLI, ["channels", "add", "--help"]),
     ]);
     cachedOpenclawVersion = version.output.trim();
     cachedChannelsHelp = channelsHelp.output;
   }
   return { version: cachedOpenclawVersion, channelsHelp: cachedChannelsHelp };
-}
-
-function clawArgs(args) {
-  return [OPENCLAW_ENTRY, ...args];
 }
 
 function configPath() {
@@ -142,7 +137,7 @@ async function startGateway() {
     "--allow-unconfigured",
   ];
 
-  gatewayProc = childProcess.spawn(OPENCLAW_NODE, clawArgs(args), {
+  gatewayProc = childProcess.spawn(OPENCLAW_CLI, args, {
     stdio: "inherit",
     env: {
       ...process.env,
@@ -154,7 +149,7 @@ async function startGateway() {
   const safeArgs = args.map((arg, i) =>
     args[i - 1] === "--token" ? "[REDACTED]" : arg
   );
-  console.log(`[gateway] starting: ${OPENCLAW_NODE} ${clawArgs(safeArgs).join(" ")}`);
+  console.log(`[gateway] starting: ${OPENCLAW_CLI} ${safeArgs.join(" ")}`);
   console.log(`[gateway] STATE_DIR: ${STATE_DIR}`);
   console.log(`[gateway] WORKSPACE_DIR: ${WORKSPACE_DIR}`);
   console.log(`[gateway] config: ${configPath()}`);
@@ -484,7 +479,7 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
       return res.status(400).json({ ok: false, output: validationError });
     }
     const onboardArgs = buildOnboardArgs(payload);
-    const onboard = await runCmd(OPENCLAW_NODE, clawArgs(onboardArgs));
+    const onboard = await runCmd(OPENCLAW_CLI, onboardArgs);
 
     let extra = "";
     extra += `\n[setup] Onboarding exit=${onboard.code} configured=${isConfigured()}\n`;
@@ -496,38 +491,38 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
 
       // Set gateway token in config
       const tokenResult = await runCmd(
-        OPENCLAW_NODE,
-        clawArgs([
+        OPENCLAW_CLI,
+        [
           "config",
           "set",
           "gateway.auth.token",
           OPENCLAW_GATEWAY_TOKEN,
-        ]),
+        ],
       );
       extra += `[config] gateway.auth.token exit=${tokenResult.code}\n`;
 
       // Set allowInsecureAuth
       const allowInsecureResult = await runCmd(
-        OPENCLAW_NODE,
-        clawArgs([
+        OPENCLAW_CLI,
+        [
           "config",
           "set",
           "gateway.controlUi.allowInsecureAuth",
           "true",
-        ]),
+        ],
       );
       extra += `[config] gateway.controlUi.allowInsecureAuth=true exit=${allowInsecureResult.code}\n`;
 
       // Set trusted proxies
       const proxiesResult = await runCmd(
-        OPENCLAW_NODE,
-        clawArgs([
+        OPENCLAW_CLI,
+        [
           "config",
           "set",
           "--json",
           "gateway.trustedProxies",
           '["127.0.0.1"]',
-        ]),
+        ],
       );
       extra += `[config] gateway.trustedProxies exit=${proxiesResult.code}\n`;
 
@@ -535,8 +530,8 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
       if (payload.model?.trim()) {
         extra += `[setup] Setting model to ${payload.model.trim()}...\n`;
         const modelResult = await runCmd(
-          OPENCLAW_NODE,
-          clawArgs(["models", "set", payload.model.trim()]),
+          OPENCLAW_CLI,
+          ["models", "set", payload.model.trim()],
         );
         extra += `[models set] exit=${modelResult.code}\n${modelResult.output || ""}`;
       }
@@ -544,14 +539,14 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
       // Configure channels if tokens provided
       async function configureChannel(name, cfgObj) {
         const set = await runCmd(
-          OPENCLAW_NODE,
-          clawArgs([
+          OPENCLAW_CLI,
+          [
             "config",
             "set",
             "--json",
             `channels.${name}`,
             JSON.stringify(cfgObj),
-          ]),
+          ],
         );
         return `\n[${name} config] exit=${set.code}\n${set.output || "(no output)"}`;
       }
@@ -593,7 +588,7 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
 });
 
 app.get("/setup/api/debug", requireSetupAuth, async (_req, res) => {
-  const v = await runCmd(OPENCLAW_NODE, clawArgs(["--version"]));
+  const v = await runCmd(OPENCLAW_CLI, ["--version"]);
   res.json({
     wrapper: {
       node: process.version,
@@ -605,8 +600,7 @@ app.get("/setup/api/debug", requireSetupAuth, async (_req, res) => {
       gatewayTokenPersisted: fs.existsSync(path.join(STATE_DIR, "gateway.token")),
     },
     openclaw: {
-      entry: OPENCLAW_ENTRY,
-      node: OPENCLAW_NODE,
+      cli: OPENCLAW_CLI,
       version: v.output.trim(),
     },
   });
@@ -620,8 +614,8 @@ app.post("/setup/api/pairing/approve", requireSetupAuth, async (req, res) => {
       .json({ ok: false, error: "Missing channel or code" });
   }
   const r = await runCmd(
-    OPENCLAW_NODE,
-    clawArgs(["pairing", "approve", String(channel), String(code)]),
+    OPENCLAW_CLI,
+    ["pairing", "approve", String(channel), String(code)],
   );
   return res
     .status(r.code === 0 ? 200 : 500)
@@ -641,7 +635,7 @@ app.post("/setup/api/reset", requireSetupAuth, async (_req, res) => {
 
 app.post("/setup/api/doctor", requireSetupAuth, async (_req, res) => {
   const args = ["doctor", "--non-interactive", "--repair"];
-  const result = await runCmd(OPENCLAW_NODE, clawArgs(args));
+  const result = await runCmd(OPENCLAW_CLI, args);
   return res.status(result.code === 0 ? 200 : 500).json({
     ok: result.code === 0,
     output: result.output,
@@ -651,7 +645,7 @@ app.post("/setup/api/doctor", requireSetupAuth, async (_req, res) => {
 // Device management API (backward compatible)
 app.get("/api/devices", async (_req, res) => {
   try {
-    const result = await runCmd(OPENCLAW_NODE, clawArgs(["devices", "list"]));
+    const result = await runCmd(OPENCLAW_CLI, ["devices", "list"]);
     const devices = [];
     const lines = result.output.trim().split('\n');
     
@@ -680,7 +674,7 @@ app.post("/api/devices/approve", async (req, res) => {
       return res.status(400).json({ success: false, error: "Missing requestId" });
     }
     
-    const result = await runCmd(OPENCLAW_NODE, clawArgs(["devices", "approve", requestId]));
+    const result = await runCmd(OPENCLAW_CLI, ["devices", "approve", requestId]);
     res.json({ 
       success: result.code === 0, 
       message: `Device ${requestId} approved`,
@@ -766,7 +760,7 @@ const server = app.listen(PORT, () => {
     (async () => {
       try {
         console.log("[wrapper] running openclaw doctor --fix...");
-        const dr = await runCmd(OPENCLAW_NODE, clawArgs(["doctor", "--fix"]));
+        const dr = await runCmd(OPENCLAW_CLI, ["doctor", "--fix"]);
         console.log(`[wrapper] doctor --fix exit=${dr.code}`);
         if (dr.output) console.log(dr.output);
       } catch (err) {

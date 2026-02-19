@@ -14,18 +14,34 @@ RUN apt-get update && apt-get install -y \
     openssl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install OpenClaw from npm (as node module)
-# This creates /openclaw/dist/entry.js that we can run with node
-WORKDIR /openclaw
-RUN npm install -g openclaw@latest || \
-    (echo "Installing from source..." && \
-     git clone https://github.com/openchat-hq/openclaw.git . && \
-     npm install && \
-     npm run build)
+# Install OpenClaw CLI using the official installer
+ENV OPENCLAW_SKIP_SETUP=1 \
+    DEBIAN_FRONTEND=noninteractive \
+    CI=true
 
-# Verify OpenClaw is installed and can run
-RUN node /openclaw/dist/entry.js --version || \
-    (echo "Trying alternate path..." && ls -la /openclaw && find /openclaw -name "entry.js")
+RUN curl -fsSL https://openclaw.ai/install.sh | bash
+
+# Add OpenClaw to PATH
+ENV PATH="/root/.local/bin:/root/.openclaw/bin:${PATH}"
+
+# Find where OpenClaw actually installed and set OPENCLAW_ENTRY
+RUN which openclaw && \
+    OPENCLAW_BIN=$(which openclaw) && \
+    echo "OpenClaw binary at: $OPENCLAW_BIN" && \
+    ls -la "$OPENCLAW_BIN" && \
+    # Check if it's a symlink and follow it
+    if [ -L "$OPENCLAW_BIN" ]; then \
+      REAL_PATH=$(readlink -f "$OPENCLAW_BIN"); \
+      echo "Real path: $REAL_PATH"; \
+      OPENCLAW_DIR=$(dirname "$REAL_PATH"); \
+    else \
+      OPENCLAW_DIR=$(dirname "$OPENCLAW_BIN"); \
+    fi && \
+    echo "OpenClaw directory: $OPENCLAW_DIR" && \
+    ls -la "$OPENCLAW_DIR" || true
+
+# Verify OpenClaw works
+RUN openclaw --version
 
 # Create workspace directory
 RUN mkdir -p /data/workspace /data/.openclaw
@@ -33,7 +49,8 @@ RUN mkdir -p /data/workspace /data/.openclaw
 # Set default workspace location
 ENV OPENCLAW_WORKSPACE=/data/workspace
 ENV OPENCLAW_STATE_DIR=/data/.openclaw
-ENV OPENCLAW_ENTRY=/openclaw/dist/entry.js
+# Use openclaw CLI binary directly
+ENV OPENCLAW_CLI=openclaw
 
 # Set up Node wrapper application
 WORKDIR /app
