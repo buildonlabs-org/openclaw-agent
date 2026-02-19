@@ -15,33 +15,28 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install OpenClaw CLI using the official installer
+# Set environment variables to skip ALL interactive prompts
 ENV OPENCLAW_SKIP_SETUP=1 \
+    OPENCLAW_SKIP_ONBOARDING=1 \
+    OPENCLAW_NO_TELEMETRY=1 \
     DEBIAN_FRONTEND=noninteractive \
     CI=true
 
-RUN curl -fsSL https://openclaw.ai/install.sh | bash
+# Install OpenClaw - ignore exit code from interactive setup failing
+# The install itself succeeds, just the post-install setup fails in Docker
+RUN curl -fsSL https://openclaw.ai/install.sh | bash || echo "Install script exit code: $? (expected if tty setup fails)"
 
 # Add OpenClaw to PATH
 ENV PATH="/root/.local/bin:/root/.openclaw/bin:${PATH}"
 
 # Find where OpenClaw actually installed and set OPENCLAW_ENTRY
-RUN which openclaw && \
-    OPENCLAW_BIN=$(which openclaw) && \
+RUN which openclaw || (echo "OpenClaw not found in PATH" && find /root -name openclaw -type f 2>/dev/null) && \
+    OPENCLAW_BIN=$(which openclaw || find /root/.local/bin -name openclaw 2>/dev/null | head -1) && \
     echo "OpenClaw binary at: $OPENCLAW_BIN" && \
-    ls -la "$OPENCLAW_BIN" && \
-    # Check if it's a symlink and follow it
-    if [ -L "$OPENCLAW_BIN" ]; then \
-      REAL_PATH=$(readlink -f "$OPENCLAW_BIN"); \
-      echo "Real path: $REAL_PATH"; \
-      OPENCLAW_DIR=$(dirname "$REAL_PATH"); \
-    else \
-      OPENCLAW_DIR=$(dirname "$OPENCLAW_BIN"); \
-    fi && \
-    echo "OpenClaw directory: $OPENCLAW_DIR" && \
-    ls -la "$OPENCLAW_DIR" || true
+    ls -la "$OPENCLAW_BIN" || true
 
 # Verify OpenClaw works
-RUN openclaw --version
+RUN openclaw --version || (echo "ERROR: openclaw command not working" && exit 1)
 
 # Create workspace directory
 RUN mkdir -p /data/workspace /data/.openclaw
