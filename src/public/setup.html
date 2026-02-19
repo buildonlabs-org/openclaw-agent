@@ -36,6 +36,10 @@
       pairingChannel: '',
       pairingCode: '',
       showPairingModal: false,
+      showLoginModal: false,
+      loginPassword: '',
+      loginError: '',
+      isAuthenticated: false,
       isReady: false,
 
       get currentGroup() {
@@ -43,7 +47,58 @@
       },
 
       async init() {
-        await this.refreshStatus();
+        await this.checkAuth();
+        if (this.isAuthenticated) {
+          await this.refreshStatus();
+        }
+      },
+
+      async checkAuth() {
+        try {
+          const res = await fetch('/setup/api/check-auth', { credentials: 'same-origin' });
+          const data = await res.json();
+          this.isAuthenticated = data.authenticated || false;
+          if (!this.isAuthenticated) {
+            this.showLoginModal = true;
+          }
+        } catch (e) {
+          this.isAuthenticated = false;
+          this.showLoginModal = true;
+        }
+      },
+
+      async login() {
+        if (!this.loginPassword.trim()) {
+          this.loginError = 'Please enter a password';
+          return;
+        }
+
+        this.loginError = '';
+        this.loading = true;
+
+        try {
+          const res = await fetch('/setup/api/login', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ password: this.loginPassword })
+          });
+
+          const data = await res.json();
+          
+          if (data.ok) {
+            this.isAuthenticated = true;
+            this.showLoginModal = false;
+            this.loginPassword = '';
+            await this.refreshStatus();
+          } else {
+            this.loginError = data.error || 'Invalid password';
+          }
+        } catch (e) {
+          this.loginError = 'Connection error. Please try again.';
+        } finally {
+          this.loading = false;
+        }
       },
 
       async httpJson(url, opts = {}) {
@@ -57,6 +112,7 @@
       },
 
       async refreshStatus() {
+        if (!this.isAuthenticated) return;
         this.status = 'Loading...';
         try {
           const j = await this.httpJson('/setup/api/status');
@@ -70,6 +126,11 @@
           }
           this.isReady = true;
         } catch (e) {
+          if (e.message.includes('401')) {
+            this.isAuthenticated = false;
+            this.showLoginModal = true;
+            return;
+          }
           this.status = 'Error: ' + String(e);
           this.isReady = true;
         }
@@ -434,6 +495,47 @@
           class="ml-auto px-5 py-2.5 rounded-lg text-sm font-medium bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
           Next →
         </button>
+      </div>
+    </div>
+
+    <!-- Login Modal -->
+    <div x-show="showLoginModal" class="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+      <div class="bg-white dark:bg-neutral-900 rounded-xl p-8 max-w-md w-full border border-neutral-200 dark:border-neutral-800" @click.away="">
+        <div class="flex justify-center mb-6">
+          <picture>
+            <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/openclaw/openclaw/main/docs/assets/openclaw-logo-text-dark.png">
+            <img src="https://raw.githubusercontent.com/openclaw/openclaw/main/docs/assets/openclaw-logo-text.png" alt="OpenClaw" class="max-w-[200px] h-auto">
+          </picture>
+        </div>
+        <h3 class="text-xl font-semibold mb-2 text-center">Setup Wizard Login</h3>
+        <p class="text-neutral-500 text-sm text-center mb-6">Enter your setup password to continue</p>
+        <form @submit.prevent="login()">
+          <div class="mb-4">
+            <label class="block text-sm font-medium mb-2">Password</label>
+            <input 
+              x-model="loginPassword" 
+              type="password" 
+              placeholder="Enter setup password" 
+              autofocus
+              class="w-full bg-neutral-50 dark:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-red-500 transition-colors"
+              :disabled="loading"
+            />
+          </div>
+          <div x-show="loginError" class="mb-4 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-sm text-red-600 dark:text-red-400" x-text="loginError"></div>
+          <button 
+            type="submit"
+            :disabled="loading"
+            class="w-full bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-3 rounded-lg font-medium transition-colors">
+            <span x-show="!loading">Login</span>
+            <span x-show="loading" class="flex items-center justify-center gap-2">
+              <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+              Logging in...
+            </span>
+          </button>
+        </form>
+        <p class="text-xs text-neutral-500 dark:text-neutral-600 text-center mt-4">
+          Password is set via SETUP_PASSWORD environment variable
+        </p>
       </div>
     </div>
 
