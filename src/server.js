@@ -238,6 +238,42 @@ const setupRateLimiter = {
   },
 };
 
+// Session store for setup authentication
+const setupSessions = {
+  sessions: new Map(),
+  sessionDuration: 3600_000, // 1 hour
+  cleanupInterval: setInterval(function () {
+    const now = Date.now();
+    for (const [token, data] of setupSessions.sessions) {
+      if (now > data.expiresAt) {
+        setupSessions.sessions.delete(token);
+      }
+    }
+  }, 300_000), // Clean up every 5 minutes
+
+  create() {
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiresAt = Date.now() + this.sessionDuration;
+    this.sessions.set(token, { expiresAt });
+    return token;
+  },
+
+  isValid(token) {
+    if (!token) return false;
+    const session = this.sessions.get(token);
+    if (!session) return false;
+    if (Date.now() > session.expiresAt) {
+      this.sessions.delete(token);
+      return false;
+    }
+    return true;
+  },
+
+  delete(token) {
+    this.sessions.delete(token);
+  },
+};
+
 // Setup auth middleware
 function requireSetupAuth(req, res, next) {
   if (!SETUP_PASSWORD) {
@@ -252,23 +288,16 @@ function requireSetupAuth(req, res, next) {
     return res.status(429).type("text/plain").send("Too many requests. Try again later.");
   }
 
-  const header = req.headers.authorization || "";
-  const [scheme, encoded] = header.split(" ");
-  if (scheme !== "Basic" || !encoded) {
-    res.set("WWW-Authenticate", 'Basic realm="OpenClaw Setup"');
-    return res.status(401).send("Auth required");
+  // Check session cookie
+  const cookies = req.headers.cookie || '';
+  const sessionMatch = cookies.match(/setup_session=([^;]+)/);
+  const sessionToken = sessionMatch ? sessionMatch[1] : null;
+
+  if (setupSessions.isValid(sessionToken)) {
+    return next();
   }
-  const decoded = Buffer.from(encoded, "base64").toString("utf8");
-  const idx = decoded.indexOf(":");
-  const password = idx >= 0 ? decoded.slice(idx + 1) : "";
-  const passwordHash = crypto.createHash("sha256").update(password).digest();
-  const expectedHash = crypto.createHash("sha256").update(SETUP_PASSWORD).digest();
-  const isValid = crypto.timingSafeEqual(passwordHash, expectedHash);
-  if (!isValid) {
-    res.set("WWW-Authenticate", 'Basic realm="OpenClaw Setup"');
-    return res.status(401).send("Invalid password");
-  }
-  return next();
+
+  return res.status(401).json({ error: 'Unauthorized', message: 'Please log in' });
 }
 
 // Express app
@@ -316,8 +345,63 @@ app.get("/setup/healthz", async (_req, res) => {
 });
 
 // Setup wizard routes
-app.get("/setup", requireSetupAuth, (_req, res) => {
+app.get("/setup", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "setup.html"));
+});
+
+app.post("/setup/api/login", async (req, res) => {
+  if (!SETUP_PASSWORD) {
+    return res.status(500).json({ ok: false, error: 'SETUP_PASSWORD not configured' });
+  }
+
+  const ip = req.ip || req.socket?.remoteAddress || "unknown";
+  if (setupRateLimiter.isRateLimited(ip)) {
+    return res.status(429).json({ ok: false, error: 'Too many requests. Try again later.' });
+  }
+
+  const { password } = req.body || {};
+  
+  if (!password) {
+    return res.status(400).json({ ok: false, error: 'Password required' });
+  }
+
+  const passwordHash = crypto.createHash("sha256").update(password).digest();
+  const expectedHash = crypto.createHash("sha256").update(SETUP_PASSWORD).digest();
+  const isValid = crypto.timingSafeEqual(passwordHash, expectedHash);
+
+  if (!isValid) {
+    return res.status(401).json({ ok: false, error: 'Invalid password' });
+  }
+
+  // Create session
+  const sessionToken = setupSessions.create();
+  
+  // Set secure cookie
+  res.cookie('setup_session', sessionToken, {
+    httpOnly: true,
+    maxAge: setupSessions.sessionDuration,
+    sameSite: 'lax',
+  });
+
+  return res.json({ ok: true });
+});
+
+app.post("/setup/api/logout", (_req, res) => {
+  const cookies = req.headers.cookie || '';
+  const sessionMatch = cookies.match(/setup_session=([^;]+)/);
+  if (sessionMatch) {
+    setupSessions.delete(sessionMatch[1]);
+  }
+  res.clearCookie('setup_session');
+  return res.json({ ok: true });
+});
+
+app.get("/setup/api/check-auth", (req, res) => {
+  const cookies = req.headers.cookie || '';
+  const sessionMatch = cookies.match(/setup_session=([^;]+)/);
+  const sessionToken = sessionMatch ? sessionMatch[1] : null;
+  const authenticated = setupSessions.isValid(sessionToken);
+  return res.json({ authenticated });
 });
 
 app.get("/setup/api/status", requireSetupAuth, async (_req, res) => {
