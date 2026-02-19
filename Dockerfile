@@ -14,20 +14,18 @@ RUN apt-get update && apt-get install -y \
     openssl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install OpenClaw CLI using the installer in non-interactive mode
-# Set environment variables to skip interactive prompts
-ENV OPENCLAW_SKIP_SETUP=1 \
-    DEBIAN_FRONTEND=noninteractive \
-    CI=true
+# Install OpenClaw from npm (as node module)
+# This creates /openclaw/dist/entry.js that we can run with node
+WORKDIR /openclaw
+RUN npm install -g openclaw@latest || \
+    (echo "Installing from source..." && \
+     git clone https://github.com/openchat-hq/openclaw.git . && \
+     npm install && \
+     npm run build)
 
-RUN curl -fsSL https://openclaw.ai/install.sh | bash || \
-    (echo "Installer may have failed on setup, checking if binary exists..." && which openclaw)
-
-# Add common OpenClaw installation paths to PATH
-ENV PATH="/root/.local/bin:/root/.openclaw/bin:${PATH}"
-
-# Verify OpenClaw is installed and working
-RUN openclaw --version
+# Verify OpenClaw is installed and can run
+RUN node /openclaw/dist/entry.js --version || \
+    (echo "Trying alternate path..." && ls -la /openclaw && find /openclaw -name "entry.js")
 
 # Create workspace directory
 RUN mkdir -p /data/workspace /data/.openclaw
@@ -35,6 +33,7 @@ RUN mkdir -p /data/workspace /data/.openclaw
 # Set default workspace location
 ENV OPENCLAW_WORKSPACE=/data/workspace
 ENV OPENCLAW_STATE_DIR=/data/.openclaw
+ENV OPENCLAW_ENTRY=/openclaw/dist/entry.js
 
 # Set up Node wrapper application
 WORKDIR /app

@@ -41,6 +41,7 @@ const INTERNAL_GATEWAY_PORT = Number.parseInt(process.env.INTERNAL_GATEWAY_PORT 
 const INTERNAL_GATEWAY_HOST = process.env.INTERNAL_GATEWAY_HOST ?? "127.0.0.1";
 const GATEWAY_TARGET = `http://${INTERNAL_GATEWAY_HOST}:${INTERNAL_GATEWAY_PORT}`;
 
+// Use Node to run OpenClaw entry point (matches arjunkomath template approach)
 const OPENCLAW_ENTRY = process.env.OPENCLAW_ENTRY?.trim() || "/openclaw/dist/entry.js";
 const OPENCLAW_NODE = process.env.OPENCLAW_NODE?.trim() || "node";
 
@@ -50,8 +51,8 @@ let cachedChannelsHelp = null;
 async function getOpenclawInfo() {
   if (!cachedOpenclawVersion) {
     const [version, channelsHelp] = await Promise.all([
-      runCmd(OPENCLAW_NODE, clawArgs(["--version"])),
-      runCmd(OPENCLAW_NODE, clawArgs(["channels", "add", "--help"])),
+      runCmd(OPENCLAW_NODE, [OPENCLAW_ENTRY, "--version"]),
+      runCmd(OPENCLAW_NODE, [OPENCLAW_ENTRY, "channels", "add", "--help"]),
     ]);
     cachedOpenclawVersion = version.output.trim();
     cachedChannelsHelp = channelsHelp.output;

@@ -9,6 +9,7 @@ set -e
 export PORT="${PORT:-8080}"
 export OPENCLAW_WORKSPACE="${OPENCLAW_WORKSPACE:-/data/workspace}"
 export OPENCLAW_STATE_DIR="${OPENCLAW_STATE_DIR:-/data/.openclaw}"
+export OPENCLAW_ENTRY="${OPENCLAW_ENTRY:-/openclaw/dist/entry.js}"
 
 echo "=============================================="
 echo "🚀 Starting OpenClaw Gateway Wrapper"
@@ -16,21 +17,23 @@ echo "=============================================="
 echo "Port: $PORT"
 echo "Workspace: $OPENCLAW_WORKSPACE"
 echo "State Dir: $OPENCLAW_STATE_DIR"
+echo "Entry: $OPENCLAW_ENTRY"
 echo "=============================================="
 
 # Ensure directories exist
 mkdir -p "$OPENCLAW_WORKSPACE"
 mkdir -p "$OPENCLAW_STATE_DIR"
 
-# Verify OpenClaw is installed
-if ! command -v openclaw &> /dev/null; then
-    echo "❌ ERROR: OpenClaw CLI not found in PATH"
-    echo "PATH: $PATH"
+# Verify OpenClaw node module is available
+if [ ! -f "$OPENCLAW_ENTRY" ]; then
+    echo "❌ ERROR: OpenClaw entry.js not found at $OPENCLAW_ENTRY"
+    echo "Available files in /openclaw:"
+    ls -la /openclaw 2>/dev/null || echo "Directory not found"
     exit 1
 fi
 
-echo "✓ OpenClaw CLI found: $(which openclaw)"
-echo "✓ OpenClaw version: $(openclaw --version 2>&1 || echo 'Unable to get version')"
+echo "✓ OpenClaw entry found: $OPENCLAW_ENTRY"
+echo "✓ OpenClaw version: $(node "$OPENCLAW_ENTRY" --version 2>&1 || echo 'Unable to get version')"
 
 # Verify SETUP_PASSWORD is set
 if [ -z "$SETUP_PASSWORD" ]; then
