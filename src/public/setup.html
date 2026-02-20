@@ -4,6 +4,58 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>🦞 OpenClaw — Setup Wizard</title>
+  
+  <!-- Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-091RV9JZ9X"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-091RV9JZ9X');
+  </script>
+
+  <!-- Amplitude Analytics -->
+  <script src="https://cdn.amplitude.com/libs/analytics-browser-2.11.1-min.js.gz"></script>
+  <script src="https://cdn.amplitude.com/libs/plugin-session-replay-browser-1.25.0-min.js.gz"></script>
+  <script>
+    window.amplitude = window.amplitude || { _q: [], _iq: {} };
+    window.amplitude.init('96184a57cd687c3545504756ad89d12a', {
+      defaultTracking: true
+    });
+  </script>
+
+  <!-- Hotjar / Contentsquare -->
+  <script async src="https://t.contentsquare.net/uxa/94c4cffa5a205.js"></script>
+
+  <!-- TikTok Pixel -->
+  <script>
+    !function (w, d, t) {
+      w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie"],ttq.setAndDefer=function(t,e){t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e},ttq.load=function(e,n){var i="https://analytics.tiktok.com/i18n/pixel/events.js";ttq._i=ttq._i||{},ttq._i[e]=[],ttq._i[e]._u=i,ttq._i[e]._s=e,ttq._i[e]._p=n||"page_view",ttq._t=ttq._t||{},ttq._t[e]=+new Date,ttq._o=ttq._o||{},ttq._o[e]=n||{};var o=document.createElement("script");o.type="text/javascript",o.async=!0,o.src=i+"?sdkid="+e+"&lib="+t;var a=document.getElementsByTagName("script")[0];a.parentNode.insertBefore(o,a)};
+      ttq.load('D5UCTARC77U9E3ANE9G0');
+      ttq.page();
+    }(window, document, 'ttq');
+  </script>
+
+  <!-- X (Twitter) Pixel -->
+  <script>
+    !function(e,t,n,s,u,a){e.twq||(s=e.twq=function(){s.exe?s.exe.apply(s,arguments):s.queue.push(arguments);
+    },s.version='1.1',s.queue=[],u=t.createElement(n),u.async=!0,u.src='https://static.ads-twitter.com/uwt.js',
+    a=t.getElementsByTagName(n)[0],a.parentNode.insertBefore(u,a))}(window,document,'script');
+    twq('config','r352f');
+  </script>
+
+  <!-- Microsoft UET (Bing) -->
+  <script>
+    (function(w,d,t,r,u){var f,n,i;w[u]=w[u]||[],f=function(){var o={ti:"343231797"};o.q=w[u],w[u]=new UET(o),w[u].push("pageLoad")},n=d.createElement(t),n.src=r,n.async=1,n.onload=n.onreadystatechange=function(){var s=this.readyState;s&&s!=="loaded"&&s!=="complete"||(f(),n.onload=n.onreadystatechange=null)},i=d.getElementsByTagName(t)[0],i.parentNode.insertBefore(n,i)})(window,document,"script","//bat.bing.com/bat.js","uetq");
+  </script>
+
+  <!-- Reddit Pixel -->
+  <script>
+    !function(w,d){if(!w.rdt){var p=w.rdt=function(){p.sendEvent?p.sendEvent.apply(p,arguments):p.callQueue.push(arguments)};p.callQueue=[];var t=d.createElement("script");t.src="https://www.redditstatic.com/ads/pixel.js",t.async=!0;var s=d.getElementsByTagName("script")[0];s.parentNode.insertBefore(t,s)}}(window,document);
+    rdt('init','a2_ifvv9ybok870');
+    rdt('track', 'PageVisit');
+  </script>
+
   <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -15,6 +67,62 @@
     [x-cloak] { display: none !important; }
   </style>
   <script>
+  // Analytics tracking helper
+  function trackEvent(eventName, properties) {
+    // Amplitude
+    if (window.amplitude && window.amplitude.track) {
+      window.amplitude.track(eventName, properties);
+    }
+    // Google Analytics
+    if (window.gtag) {
+      window.gtag('event', eventName, properties);
+    }
+    // TikTok
+    if (window.ttq) {
+      window.ttq.track(eventName, properties);
+    }
+    // Twitter
+    if (window.twq) {
+      window.twq('event', eventName, properties);
+    }
+    // Microsoft UET
+    if (window.uetq) {
+      window.uetq.push('event', eventName, properties);
+    }
+    // Reddit
+    if (window.rdt) {
+      window.rdt('track', eventName, properties);
+    }
+  }
+
+  // Track conversion events (for setup completion)
+  function trackConversion() {
+    // TikTok CompleteRegistration event
+    if (window.ttq) {
+      window.ttq.track('CompleteRegistration');
+    }
+    // Twitter conversion
+    if (window.twq) {
+      window.twq('event', 'tw-r352f-r39q5', {});
+    }
+    // Microsoft UET goal
+    if (window.uetq) {
+      window.uetq.push('event', 'setup_complete', {'event_category': 'conversion', 'event_label': 'setup', 'event_value': '1'});
+    }
+    // Reddit SignUp event
+    if (window.rdt) {
+      window.rdt('track', 'SignUp');
+    }
+    // Google Analytics conversion
+    if (window.gtag) {
+      window.gtag('event', 'conversion', {
+        'send_to': 'G-091RV9JZ9X',
+        'event_category': 'setup',
+        'event_label': 'completed'
+      });
+    }
+  }
+
   document.addEventListener('alpine:init', () => {
     Alpine.data('setupApp', () => ({
       step: 1,
@@ -36,6 +144,9 @@
       pairingChannel: '',
       pairingCode: '',
       showPairingModal: false,
+      showPairingResultModal: false,
+      pairingResultMessage: '',
+      isPairingResultSuccess: true,
       showLoginModal: false,
       loginPassword: '',
       loginError: '',
@@ -46,7 +157,18 @@
         return this.authGroups.find(g => g.value === this.selectedGroup);
       },
 
+      get pairingResultTitle() {
+        return this.isPairingResultSuccess ? 'Pairing Approved' : 'Pairing Failed';
+      },
+
+      get pairingResultSubtitle() {
+        return this.isPairingResultSuccess ? 'Your user can now connect.' : 'Please review the details and try again.';
+      },
+
       async init() {
+        // Track page view
+        trackEvent('page_view_setup', { configured: this.configured });
+        
         await this.checkAuth();
         if (this.isAuthenticated) {
           await this.refreshStatus();
@@ -60,10 +182,12 @@
           this.isAuthenticated = data.authenticated || false;
           if (!this.isAuthenticated) {
             this.showLoginModal = true;
+            trackEvent('setup_login_shown', {});
           }
         } catch (e) {
           this.isAuthenticated = false;
           this.showLoginModal = true;
+          trackEvent('setup_login_shown', {});
         }
       },
 
@@ -90,12 +214,15 @@
             this.isAuthenticated = true;
             this.showLoginModal = false;
             this.loginPassword = '';
+            trackEvent('setup_login_success', {});
             await this.refreshStatus();
           } else {
             this.loginError = data.error || 'Invalid password';
+            trackEvent('setup_login_failed', { error: data.error });
           }
         } catch (e) {
           this.loginError = 'Connection error. Please try again.';
+          trackEvent('setup_login_failed', { error: 'connection_error' });
         } finally {
           this.loading = false;
         }
@@ -142,14 +269,28 @@
         if (this.authChoices.length > 0) {
           this.selectedAuth = this.authChoices[0].value;
         }
+        
+        // Track provider selection
+        if (group) {
+          trackEvent('setup_provider_selected', { 
+            provider: this.selectedGroup,
+            provider_label: group.label 
+          });
+        }
       },
 
       nextStep() {
-        if (this.step < this.totalSteps) this.step++;
+        if (this.step < this.totalSteps) {
+          this.step++;
+          trackEvent('setup_step_viewed', { step: this.step, total_steps: this.totalSteps });
+        }
       },
 
       prevStep() {
-        if (this.step > 1) this.step--;
+        if (this.step > 1) {
+          this.step--;
+          trackEvent('setup_step_viewed', { step: this.step, total_steps: this.totalSteps });
+        }
       },
 
       async runSetup() {
@@ -165,6 +306,15 @@
         this.log = 'Running...\n';
         this.loading = true;
 
+        // Track setup started
+        trackEvent('setup_started', {
+          provider: this.selectedGroup,
+          auth_method: this.selectedAuth,
+          has_telegram: !!this.telegramToken,
+          has_discord: !!this.discordToken,
+          has_custom_model: !!this.model
+        });
+
         try {
           const res = await fetch('/setup/api/run', {
             method: 'POST',
@@ -176,9 +326,30 @@
           let j;
           try { j = JSON.parse(text); } catch (_e) { j = { ok: false, output: text }; }
           this.log += (j.output || JSON.stringify(j, null, 2));
+          
+          if (j.ok || (j.output && !j.output.toLowerCase().includes('error'))) {
+            trackEvent('setup_completed', {
+              provider: this.selectedGroup,
+              auth_method: this.selectedAuth,
+              has_telegram: !!this.telegramToken,
+              has_discord: !!this.discordToken
+            });
+            // Track conversion across all platforms
+            trackConversion();
+          } else {
+            trackEvent('setup_failed', {
+              provider: this.selectedGroup,
+              error: j.output || 'unknown'
+            });
+          }
+          
           await this.refreshStatus();
         } catch (e) {
           this.log += '\nError: ' + String(e) + '\n';
+          trackEvent('setup_failed', {
+            provider: this.selectedGroup,
+            error: String(e)
+          });
         } finally {
           this.loading = false;
         }
@@ -188,20 +359,27 @@
         this.pairingChannel = '';
         this.pairingCode = '';
         this.showPairingModal = true;
+        trackEvent('setup_pairing_opened', {});
+      },
+
+      showPairingResult(success, message) {
+        this.isPairingResultSuccess = success;
+        this.pairingResultMessage = message.trim();
+        this.showPairingModal = false;
+        this.showPairingResultModal = true;
       },
 
       async approvePairing() {
         const channel = this.pairingChannel.trim().toLowerCase();
         if (channel !== 'telegram' && channel !== 'discord') {
-          alert('Channel must be "telegram" or "discord"');
+          this.showPairingResult(false, 'Channel must be "telegram" or "discord"');
           return;
         }
         const code = this.pairingCode.trim();
         if (!code) {
-          alert('Please enter a pairing code');
+          this.showPairingResult(false, 'Please enter a pairing code');
           return;
         }
-        this.showPairingModal = false;
         this.log += '\nApproving pairing for ' + channel + '...\n';
 
         try {
@@ -217,20 +395,26 @@
           if (result.ok) {
             const msg = result.output || 'Pairing approved successfully';
             this.log += '✓ ' + msg + '\n';
-            alert('✓ ' + msg.trim());
+            this.showPairingResult(true, msg);
+            trackEvent('setup_pairing_approved', { channel: channel });
           } else {
             const msg = result.output || result.error || 'Unknown error';
             this.log += '✗ Failed: ' + msg + '\n';
-            alert('✗ Pairing failed: ' + msg.trim());
+            this.showPairingResult(false, 'Pairing failed: ' + msg);
+            trackEvent('setup_pairing_failed', { channel: channel, error: msg });
           }
         } catch (e) {
           this.log += '✗ Error: ' + String(e) + '\n';
-          alert('✗ Pairing failed: ' + String(e));
+          this.showPairingResult(false, 'Pairing failed: ' + String(e));
+          trackEvent('setup_pairing_failed', { channel: channel, error: String(e) });
         }
       },
 
       async resetSetup() {
         if (!confirm('Reset setup? This deletes the config file so onboarding can run again.')) return;
+        
+        trackEvent('setup_reset', {});
+        
         this.log = 'Resetting...\n';
         this.loading = true;
 
@@ -249,6 +433,8 @@
       async runDoctor() {
         this.log = 'Running doctor...\n';
         this.loading = true;
+
+        trackEvent('setup_doctor_ran', {});
 
         try {
           const res = await fetch('/setup/api/doctor', {
@@ -294,7 +480,7 @@
           <span class="text-xs uppercase tracking-wide text-neutral-500 font-medium">🦞 OpenClaw</span>
           <p class="text-sm font-medium text-neutral-700 dark:text-neutral-300 mt-1" x-text="openclawVersion || 'Loading...'"></p>
         </div>
-        <a href="/openclaw" class="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+        <a href="/openclaw" @click="trackEvent('gateway_ui_opened', { configured: configured })" class="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">
           Open Gateway UI
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
         </a>
@@ -378,7 +564,7 @@
 
             <div>
               <label class="block text-xs uppercase tracking-wide text-neutral-500 font-medium mb-2">Authentication</label>
-              <select x-model="selectedAuth" class="w-full bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-red-500 transition-colors">
+              <select x-model="selectedAuth" @change="trackEvent('setup_auth_method_selected', { auth_method: selectedAuth, provider: selectedGroup })" class="w-full bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-red-500 transition-colors">
                 <template x-for="choice in authChoices" :key="choice.value">
                   <option :value="choice.value" x-text="choice.label"></option>
                 </template>
@@ -412,7 +598,7 @@
                 </div>
                 <span class="font-medium">Telegram</span>
               </div>
-              <input x-model="telegramToken" type="password" placeholder="Bot token from @BotFather" class="w-full bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-lg px-4 py-3 text-sm placeholder-neutral-400 dark:placeholder-neutral-600 focus:outline-none focus:border-sky-500 transition-colors" />
+              <input x-model="telegramToken" type="password" placeholder="Bot token from @BotFather" @blur="telegramToken && trackEvent('setup_channel_added', { channel: 'telegram' })" class="w-full bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-lg px-4 py-3 text-sm placeholder-neutral-400 dark:placeholder-neutral-600 focus:outline-none focus:border-sky-500 transition-colors" />
               <p class="text-xs text-neutral-500 dark:text-neutral-600 mt-2">Message <code class="bg-neutral-200 dark:bg-neutral-800 px-1.5 py-0.5 rounded text-sky-600 dark:text-sky-400">@BotFather</code> on Telegram and run <code class="bg-neutral-200 dark:bg-neutral-800 px-1.5 py-0.5 rounded text-sky-600 dark:text-sky-400">/newbot</code></p>
             </div>
 
@@ -423,7 +609,7 @@
                 </div>
                 <span class="font-medium">Discord</span>
               </div>
-              <input x-model="discordToken" type="password" placeholder="Bot token from Developer Portal" class="w-full bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-lg px-4 py-3 text-sm placeholder-neutral-400 dark:placeholder-neutral-600 focus:outline-none focus:border-indigo-500 transition-colors" />
+              <input x-model="discordToken" type="password" placeholder="Bot token from Developer Portal" @blur="discordToken && trackEvent('setup_channel_added', { channel: 'discord' })" class="w-full bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-lg px-4 py-3 text-sm placeholder-neutral-400 dark:placeholder-neutral-600 focus:outline-none focus:border-indigo-500 transition-colors" />
               <p class="text-xs text-neutral-500 dark:text-neutral-600 mt-2">Create a bot at <code class="bg-neutral-200 dark:bg-neutral-800 px-1.5 py-0.5 rounded text-indigo-600 dark:text-indigo-400">discord.com/developers/applications</code></p>
             </div>
           </div>
@@ -560,6 +746,42 @@
             <button @click="approvePairing()" class="flex-1 bg-red-600 hover:bg-red-700 text-white px-4 py-3 rounded-lg font-medium transition-colors">Approve</button>
             <button @click="showPairingModal = false" class="flex-1 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-300 px-4 py-3 rounded-lg font-medium border border-neutral-300 dark:border-neutral-700 transition-colors">Cancel</button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Pairing Success Modal -->
+    <div x-show="showPairingResultModal" x-cloak class="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50" @click.self="showPairingResultModal = false">
+      <div class="bg-white dark:bg-neutral-900 rounded-xl p-6 max-w-md w-full border border-neutral-200 dark:border-neutral-800">
+        <div class="flex items-center gap-3 mb-4">
+          <div
+            class="w-10 h-10 rounded-full flex items-center justify-center"
+            :class="isPairingResultSuccess ? 'bg-emerald-100 dark:bg-emerald-900/30' : 'bg-red-100 dark:bg-red-900/30'">
+            <svg x-show="isPairingResultSuccess" class="w-5 h-5 text-emerald-600 dark:text-emerald-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path fill-rule="evenodd" d="M16.704 5.29a1 1 0 0 1 .006 1.414l-7.2 7.26a1 1 0 0 1-1.418.003L3.3 9.08a1 1 0 1 1 1.4-1.428l4.102 4.02 6.49-6.382a1 1 0 0 1 1.412 0z" clip-rule="evenodd" />
+            </svg>
+            <svg x-show="!isPairingResultSuccess" class="w-5 h-5 text-red-600 dark:text-red-400" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path fill-rule="evenodd" d="M10 18a8 8 0 1 0 0-16 8 8 0 0 0 0 16Zm0-11a1 1 0 0 1 1 1v3a1 1 0 1 1-2 0V8a1 1 0 0 1 1-1Zm0 7a1.25 1.25 0 1 1 0-2.5 1.25 1.25 0 0 1 0 2.5Z" clip-rule="evenodd" />
+            </svg>
+          </div>
+          <div>
+            <h3 class="text-lg font-semibold" x-text="pairingResultTitle"></h3>
+            <p class="text-sm text-neutral-500" x-text="pairingResultSubtitle"></p>
+          </div>
+        </div>
+        <div
+          class="border rounded-lg px-4 py-3 text-sm"
+          :class="isPairingResultSuccess
+            ? 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300'
+            : 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800 text-red-700 dark:text-red-300'"
+          x-text="pairingResultMessage"></div>
+        <div class="mt-5">
+          <button
+            @click="showPairingResultModal = false"
+            class="w-full text-white px-4 py-3 rounded-lg font-medium transition-colors"
+            :class="isPairingResultSuccess ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-red-600 hover:bg-red-700'">
+            Done
+          </button>
         </div>
       </div>
     </div>

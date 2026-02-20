@@ -3,8 +3,86 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  
+  <!-- Primary Meta Tags -->
+  <title>WaliGPT | OpenClaw Launcher - Deploy AI Agents</title>
+  <meta name="title" content="OpenClaw Launcher - Deploy AI Agents">
+  <meta name="description" content="One-click deploy OpenClaw agents. Specialize them to your needs. Hosted on isolated cloud instances.">
+  <meta name="keywords" content="OpenClaw, AI agents, deploy agents, cloud hosting, agent launcher, WaliGPT">
+  
+  <!-- Open Graph / Facebook -->
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://openclaw-launcher.com/">
+  <meta property="og:title" content="WaliGPT | OpenClaw Launcher - Deploy AI Agents">
+  <meta property="og:description" content="One-click deploy OpenClaw agents. Specialize them to your needs. Hosted on isolated cloud instances.">
+  <meta property="og:image" content="/images/wali%20logo%20white%20bg.png">
+  
+  <!-- Twitter -->
+  <meta property="twitter:card" content="summary_large_image">
+  <meta property="twitter:url" content="https://openclaw-launcher.com/">
+  <meta property="twitter:title" content="WaliGPT | OpenClaw Launcher - Deploy AI Agents">
+  <meta property="twitter:description" content="One-click deploy OpenClaw agents. Specialize them to your needs.">
+  <meta property="twitter:image" content="/images/wali%20logo%20white%20bg.png">
+  
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="/images/wali-robot-logo-4x-no-bg.png">
   <meta http-equiv="refresh" content="3">
-  <title>🦞 OpenClaw — Starting Up</title>
+  
+  <!-- Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-091RV9JZ9X"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-091RV9JZ9X');
+  </script>
+
+  <!-- Amplitude Analytics -->
+  <script src="https://cdn.amplitude.com/libs/analytics-browser-2.11.1-min.js.gz"></script>
+  <script src="https://cdn.amplitude.com/libs/plugin-session-replay-browser-1.25.0-min.js.gz"></script>
+  <script>
+    window.amplitude = window.amplitude || { _q: [], _iq: {} };
+    window.amplitude.init('96184a57cd687c3545504756ad89d12a', {
+      defaultTracking: true
+    });
+    // Track page view
+    if (window.amplitude.track) {
+      window.amplitude.track('page_view_loading');
+    }
+  </script>
+
+  <!-- Hotjar / Contentsquare -->
+  <script async src="https://t.contentsquare.net/uxa/94c4cffa5a205.js"></script>
+
+  <!-- TikTok Pixel -->
+  <script>
+    !function (w, d, t) {
+      w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie"],ttq.setAndDefer=function(t,e){t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e},ttq.load=function(e,n){var i="https://analytics.tiktok.com/i18n/pixel/events.js";ttq._i=ttq._i||{},ttq._i[e]=[],ttq._i[e]._u=i,ttq._i[e]._s=e,ttq._i[e]._p=n||"page_view",ttq._t=ttq._t||{},ttq._t[e]=+new Date,ttq._o=ttq._o||{},ttq._o[e]=n||{};var o=document.createElement("script");o.type="text/javascript",o.async=!0,o.src=i+"?sdkid="+e+"&lib="+t;var a=document.getElementsByTagName("script")[0];a.parentNode.insertBefore(o,a)};
+      ttq.load('D5UCTARC77U9E3ANE9G0');
+      ttq.page();
+    }(window, document, 'ttq');
+  </script>
+
+  <!-- X (Twitter) Pixel -->
+  <script>
+    !function(e,t,n,s,u,a){e.twq||(s=e.twq=function(){s.exe?s.exe.apply(s,arguments):s.queue.push(arguments);
+    },s.version='1.1',s.queue=[],u=t.createElement(n),u.async=!0,u.src='https://static.ads-twitter.com/uwt.js',
+    a=t.getElementsByTagName(n)[0],a.parentNode.insertBefore(u,a))}(window,document,'script');
+    twq('config','r352f');
+  </script>
+
+  <!-- Microsoft UET (Bing) -->
+  <script>
+    (function(w,d,t,r,u){var f,n,i;w[u]=w[u]||[],f=function(){var o={ti:"343231797"};o.q=w[u],w[u]=new UET(o),w[u].push("pageLoad")},n=d.createElement(t),n.src=r,n.async=1,n.onload=n.onreadystatechange=function(){var s=this.readyState;s&&s!=="loaded"&&s!=="complete"||(f(),n.onload=n.onreadystatechange=null)},i=d.getElementsByTagName(t)[0],i.parentNode.insertBefore(n,i)})(window,document,"script","//bat.bing.com/bat.js","uetq");
+  </script>
+
+  <!-- Reddit Pixel -->
+  <script>
+    !function(w,d){if(!w.rdt){var p=w.rdt=function(){p.sendEvent?p.sendEvent.apply(p,arguments):p.callQueue.push(arguments)};p.callQueue=[];var t=d.createElement("script");t.src="https://www.redditstatic.com/ads/pixel.js",t.async=!0;var s=d.getElementsByTagName("script")[0];s.parentNode.insertBefore(t,s)}}(window,document);
+    rdt('init','a2_ifvv9ybok870');
+    rdt('track', 'PageVisit');
+  </script>
+
   <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
