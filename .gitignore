@@ -1,0 +1,43 @@
+# Dependency directories
+node_modules/
+npm-debug.log
+yarn-error.log
+package-lock.json
+
+# Environment variables
+.env
+.env.*
+
+# Data directories (contains sensitive tokens and runtime data)
+.data/
+data/
+
+# Logs
+logs/
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+.Spotlight-V100
+.Trashes
+
+# Editor directories
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build outputs
+dist/
+build/
+tmp/
+
+# Testing
+coverage/
+.nyc_output/
+
+# Railway
+railway.json
+railway.toml

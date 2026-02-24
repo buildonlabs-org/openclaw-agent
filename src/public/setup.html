@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
   <title>🦞 OpenClaw — Setup Wizard</title>
   
   <!-- Google Analytics -->
@@ -143,6 +143,7 @@
       loading: false,
       pairingChannel: '',
       pairingCode: '',
+      pendingPairings: [],
       showPairingModal: false,
       showPairingResultModal: false,
       pairingResultMessage: '',
@@ -162,7 +163,9 @@
       },
 
       get pairingResultSubtitle() {
-        return this.isPairingResultSuccess ? 'Your user can now connect.' : 'Please review the details and try again.';
+        return this.isPairingResultSuccess 
+          ? 'User can now send messages to the bot!' 
+          : 'The code may have expired or was already used. Have the user send a new message to get a fresh code.';
       },
 
       async init() {
@@ -245,7 +248,20 @@
           const j = await this.httpJson('/setup/api/status');
           this.configured = j.configured;
           this.openclawVersion = j.openclawVersion || '';
-          this.status = j.configured ? 'Configured - open /openclaw' : 'Not configured - run setup below';
+          
+          // Update status with gateway info
+          let statusText = j.configured ? 'Configured' : 'Not configured - run setup below';
+          if (j.configured && j.gateway) {
+            if (j.gateway.running) {
+              statusText = 'Gateway: Running ✓';
+            } else if (j.gateway.starting) {
+              statusText = 'Gateway: Starting...';
+            } else {
+              statusText = 'Gateway: Stopped ⚠️';
+            }
+          }
+          this.status = statusText;
+          
           this.authGroups = j.authGroups || [];
           if (this.authGroups.length > 0) {
             this.selectedGroup = this.authGroups[0].value;
@@ -294,6 +310,9 @@
       },
 
       async runSetup() {
+        // Set loading immediately for instant feedback
+        this.loading = true;
+        
         const payload = {
           flow: this.flow,
           authChoice: this.selectedAuth,
@@ -304,7 +323,6 @@
         };
 
         this.log = 'Running...\n';
-        this.loading = true;
 
         // Track setup started
         trackEvent('setup_started', {
@@ -358,8 +376,28 @@
       openPairingModal() {
         this.pairingChannel = '';
         this.pairingCode = '';
+        this.pendingPairings = [];
         this.showPairingModal = true;
+        this.loadPendingPairings();
         trackEvent('setup_pairing_opened', {});
+      },
+
+      async loadPendingPairings() {
+        try {
+          const res = await fetch('/setup/api/pairing/list', { credentials: 'same-origin' });
+          const result = await res.json();
+          if (result.ok && result.output) {
+            // Parse the output to extract codes
+            const lines = result.output.trim().split('\n').filter(l => l.trim());
+            this.pendingPairings = lines.map(line => {
+              // Try to extract channel and code from the line
+              const match = line.match(/(\w+).*?([A-Z0-9]{8})/i);
+              return match ? { channel: match[1], code: match[2], raw: line } : { raw: line };
+            });
+          }
+        } catch (e) {
+          console.error('Failed to load pending pairings:', e);
+        }
       },
 
       showPairingResult(success, message) {
@@ -380,6 +418,9 @@
           this.showPairingResult(false, 'Please enter a pairing code');
           return;
         }
+        
+        // Set loading immediately for instant feedback
+        this.loading = true;
         this.log += '\nApproving pairing for ' + channel + '...\n';
 
         try {
@@ -392,14 +433,22 @@
           const t = await res.text();
           let result;
           try { result = JSON.parse(t); } catch (_e) { result = { ok: false, output: t }; }
+          
+          // Log debug info
+          if (result.debug) {
+            this.log += `[Debug] Exit code: ${result.exitCode}, Success: ${result.debug.hasSuccess}, Error: ${result.debug.hasError}\n`;
+          }
+          
           if (result.ok) {
             const msg = result.output || 'Pairing approved successfully';
             this.log += '✓ ' + msg + '\n';
+            this.log += '✓ User can now send messages to the bot!\n';
             this.showPairingResult(true, msg);
             trackEvent('setup_pairing_approved', { channel: channel });
           } else {
             const msg = result.output || result.error || 'Unknown error';
             this.log += '✗ Failed: ' + msg + '\n';
+            this.log += 'Tip: Check if the pairing code expired (codes expire after ~5 minutes)\n';
             this.showPairingResult(false, 'Pairing failed: ' + msg);
             trackEvent('setup_pairing_failed', { channel: channel, error: msg });
           }
@@ -407,16 +456,19 @@
           this.log += '✗ Error: ' + String(e) + '\n';
           this.showPairingResult(false, 'Pairing failed: ' + String(e));
           trackEvent('setup_pairing_failed', { channel: channel, error: String(e) });
+        } finally {
+          this.loading = false;
         }
       },
 
       async resetSetup() {
         if (!confirm('Reset setup? This deletes the config file so onboarding can run again.')) return;
         
+        // Set loading immediately for instant feedback
+        this.loading = true;
         trackEvent('setup_reset', {});
         
         this.log = 'Resetting...\n';
-        this.loading = true;
 
         try {
           const res = await fetch('/setup/api/reset', { method: 'POST', credentials: 'same-origin' });
@@ -431,8 +483,9 @@
       },
 
       async runDoctor() {
-        this.log = 'Running doctor...\n';
+        // Set loading immediately for instant feedback
         this.loading = true;
+        this.log = 'Running doctor...\n';
 
         trackEvent('setup_doctor_ran', {});
 
@@ -729,6 +782,17 @@
     <div x-show="showPairingModal" x-cloak class="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50" @click.self="showPairingModal = false">
       <div class="bg-white dark:bg-neutral-900 rounded-xl p-6 max-w-md w-full border border-neutral-200 dark:border-neutral-800">
         <h3 class="text-lg font-semibold mb-4">Approve Pairing</h3>
+        
+        <!-- Show pending requests if any -->
+        <div x-show="pendingPairings.length > 0" class="mb-4 p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
+          <p class="text-xs font-medium text-blue-700 dark:text-blue-300 mb-2">Pending Requests:</p>
+          <div class="space-y-1">
+            <template x-for="pairing in pendingPairings" :key="pairing.code || pairing.raw">
+              <div class="text-xs text-blue-600 dark:text-blue-400 font-mono bg-blue-100 dark:bg-blue-900/30 px-2 py-1 rounded" x-text="pairing.raw"></div>
+            </template>
+          </div>
+        </div>
+        
         <div class="space-y-4">
           <div>
             <label class="block text-sm font-medium mb-2">Channel</label>
@@ -743,8 +807,14 @@
             <input x-model="pairingCode" type="text" placeholder="Enter code from user" class="w-full bg-neutral-50 dark:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 rounded-lg px-4 py-2.5 text-sm" />
           </div>
           <div class="flex gap-3">
-            <button @click="approvePairing()" class="flex-1 bg-red-600 hover:bg-red-700 text-white px-4 py-3 rounded-lg font-medium transition-colors">Approve</button>
-            <button @click="showPairingModal = false" class="flex-1 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 text-neutral-700 dark:text-neutral-300 px-4 py-3 rounded-lg font-medium border border-neutral-300 dark:border-neutral-700 transition-colors">Cancel</button>
+            <button @click="approvePairing()" :disabled="loading" class="flex-1 bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-3 rounded-lg font-medium transition-colors">
+              <span x-show="!loading">Approve</span>
+              <span x-show="loading" class="flex items-center justify-center gap-2">
+                <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/></svg>
+                Approving...
+              </span>
+            </button>
+            <button @click="showPairingModal = false" :disabled="loading" class="flex-1 bg-neutral-100 dark:bg-neutral-800 hover:bg-neutral-200 dark:hover:bg-neutral-700 disabled:opacity-50 disabled:cursor-not-allowed text-neutral-700 dark:text-neutral-300 px-4 py-3 rounded-lg font-medium border border-neutral-300 dark:border-neutral-700 transition-colors">Cancel</button>
           </div>
         </div>
       </div>
@@ -770,7 +840,7 @@
           </div>
         </div>
         <div
-          class="border rounded-lg px-4 py-3 text-sm"
+          class="border rounded-lg px-4 py-3 text-sm break-words whitespace-pre-wrap"
           :class="isPairingResultSuccess
             ? 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300'
             : 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800 text-red-700 dark:text-red-300'"
