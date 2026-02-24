@@ -80,7 +80,7 @@ function sleep(ms) {
 }
 
 async function waitForGatewayReady(opts = {}) {
-  const maxWait = opts.maxWait || 20000;
+  const maxWait = opts.maxWait || 90000; // 90 seconds (gateway can take 30-40s to start)
   const started = Date.now();
   
   while (Date.now() - started < maxWait) {
@@ -93,7 +93,8 @@ async function waitForGatewayReady(opts = {}) {
       });
       clearTimeout(timeout);
       if (res) {
-        console.log(`[gateway] ready at ${GATEWAY_TARGET}`);
+        const elapsed = Math.round((Date.now() - started) / 1000);
+        console.log(`[gateway] ready at ${GATEWAY_TARGET} (${elapsed}s)`);
         return true;
       }
     } catch (err) {
@@ -241,7 +242,7 @@ const setupRateLimiter = {
 // Session store for setup authentication
 const setupSessions = {
   sessions: new Map(),
-  sessionDuration: 3600_000, // 1 hour
+  sessionDuration: 14400_000, // 4 hours (increased from 1 hour for better UX during setup)
   cleanupInterval: setInterval(function () {
     const now = Date.now();
     for (const [token, data] of setupSessions.sessions) {
@@ -447,7 +448,43 @@ app.get("/setup/api/status", requireSetupAuth, async (_req, res) => {
     channelsAddHelp: channelsHelp,
     authGroups,
     tuiEnabled: false,
+    gateway: {
+      running: isGatewayReady(),
+      starting: isGatewayStarting(),
+      pid: gatewayProc?.pid || null,
+    },
   });
+});
+
+app.get("/setup/api/gateway/logs", requireSetupAuth, async (_req, res) => {
+  // Get recent gateway logs
+  const logPath = '/tmp/openclaw/openclaw-' + new Date().toISOString().split('T')[0] + '.log';
+  try {
+    const logResult = await runCmd('tail', ['-n', '100', logPath]);
+    const logs = logResult.output || 'No logs found';
+    
+    // Parse for important status
+    const hasTelegram = logs.includes('[telegram]');
+    const telegramStarted = logs.includes('[telegram]') && logs.includes('starting provider');
+    const hasErrors = logs.toLowerCase().includes('error') || logs.toLowerCase().includes('failed');
+    
+    res.json({
+      ok: true,
+      logs: logs,
+      status: {
+        hasTelegram,
+        telegramStarted,
+        hasErrors,
+        logPath,
+      }
+    });
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: String(err),
+      logPath,
+    });
+  }
 });
 
 function buildOnboardArgs(payload) {
@@ -544,7 +581,13 @@ function validatePayload(payload) {
   return null;
 }
 
-app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
+app.post("/setup/api/run", requireSetupAuth, async (req, res) => {  // Extend timeout for doctor operation
+  req.setTimeout(300_000); // 5 minutes
+  res.setTimeout(300_000);
+    // Extend timeout for long-running onboard operation (default is often 30-120s)
+  req.setTimeout(600_000); // 10 minutes
+  res.setTimeout(600_000);
+  
   try {
     if (isConfigured()) {
       await ensureGatewayRunning();
@@ -690,7 +733,32 @@ app.get("/setup/api/debug", requireSetupAuth, async (_req, res) => {
   });
 });
 
+app.get("/setup/api/pairing/list", requireSetupAuth, async (req, res) => {
+  // List all pending pairing requests
+  req.setTimeout(60_000);
+  res.setTimeout(60_000);
+  
+  const { channel } = req.query || {};
+  const args = ["pairing", "list"];
+  if (channel) {
+    args.push(String(channel));
+  }
+  
+  const r = await runCmd(OPENCLAW_CLI, args);
+  return res
+    .status(r.code === 0 ? 200 : 500)
+    .json({ 
+      ok: r.code === 0, 
+      output: r.output,
+      pending: r.output ? r.output.split('\n').filter(line => line.trim()).length : 0
+    });
+});
+
 app.post("/setup/api/pairing/approve", requireSetupAuth, async (req, res) => {
+  // Extend timeout for pairing operations
+  req.setTimeout(120_000); // 2 minutes
+  res.setTimeout(120_000);
+  
   const { channel, code } = req.body || {};
   if (!channel || !code) {
     return res
@@ -701,9 +769,45 @@ app.post("/setup/api/pairing/approve", requireSetupAuth, async (req, res) => {
     OPENCLAW_CLI,
     ["pairing", "approve", String(channel), String(code)],
   );
+  
+  // Check if pairing succeeded even if exit code is non-zero
+  // OpenClaw CLI sometimes returns non-zero but still succeeds
+  const output = r.output || '';
+  const successIndicators = [
+    'approved',
+    'success',
+    'granted',
+    'paired',
+    'authorized'
+  ];
+  const errorIndicators = [
+    'no pending',
+    'not found',
+    'invalid',
+    'expired',
+    'failed'
+  ];
+  
+  const hasSuccess = successIndicators.some(word => 
+    output.toLowerCase().includes(word)
+  );
+  const hasError = errorIndicators.some(word => 
+    output.toLowerCase().includes(word)
+  );
+  
+  // Consider it successful if:
+  // - Exit code is 0, OR
+  // - Output contains success indicators and no error indicators
+  const isSuccess = r.code === 0 || (hasSuccess && !hasError);
+  
   return res
-    .status(r.code === 0 ? 200 : 500)
-    .json({ ok: r.code === 0, output: r.output });
+    .status(isSuccess ? 200 : 500)
+    .json({ 
+      ok: isSuccess, 
+      output: output,
+      exitCode: r.code,
+      debug: { hasSuccess, hasError }
+    });
 });
 
 app.post("/setup/api/reset", requireSetupAuth, async (_req, res) => {
@@ -718,6 +822,10 @@ app.post("/setup/api/reset", requireSetupAuth, async (_req, res) => {
 });
 
 app.post("/setup/api/doctor", requireSetupAuth, async (_req, res) => {
+  // Extend timeout for doctor operation
+  _req.setTimeout(300_000); // 5 minutes
+  res.setTimeout(300_000);
+  
   const args = ["doctor", "--non-interactive", "--repair"];
   const result = await runCmd(OPENCLAW_CLI, args);
   return res.status(result.code === 0 ? 200 : 500).json({
@@ -856,6 +964,11 @@ const server = app.listen(PORT, () => {
     });
   }
 });
+
+// Set server-wide timeout to 10 minutes (default is often 120s or 30s depending on Node version)
+// Individual endpoints can override this with req/res.setTimeout()
+server.timeout = 600_000;
+server.keepAliveTimeout = 605_000; // Slightly higher than timeout
 
 // WebSocket upgrade handler
 server.on("upgrade", async (req, socket, head) => {
