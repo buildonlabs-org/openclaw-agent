@@ -1019,8 +1019,8 @@ app.use(async (req, res) => {
   return proxy.web(req, res, { target: GATEWAY_TARGET });
 });
 
-const server = app.listen(PORT, () => {
-  console.log(`[wrapper] listening on port ${PORT}`);
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log(`[wrapper] listening on 0.0.0.0:${PORT}`);
   console.log(`[wrapper] setup wizard: http://localhost:${PORT}/setup`);
   console.log(`[wrapper] configured: ${isConfigured()}`);
   console.log(`[wrapper] gateway token: ${OPENCLAW_GATEWAY_TOKEN.slice(0, 12)}...`);
