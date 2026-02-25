@@ -33,6 +33,9 @@
     })(window, document, "clarity", "script", "vmrjztqvbn");
   </script>
 
+  <!-- Statsig -->
+  <script src="https://cdn.jsdelivr.net/npm/@statsig/js-client@3/build/statsig-js-client+session-replay+web-analytics.min.js?apikey=client-eVtd4YnC1vrep0ybXLjra2k4EzQvhVTGUwhd6mdA25z"></script>
+
   <!-- Hotjar / Contentsquare -->
   <script async src="https://t.contentsquare.net/uxa/94c4cffa5a205.js"></script>
 
@@ -78,6 +81,11 @@
   <script>
   // Analytics tracking helper
   function trackEvent(eventName, properties) {
+    // Statsig
+    if (window.statsig && window.statsig.logEvent) {
+      window.statsig.logEvent(eventName, null, properties || {});
+    }
+    
     // Microsoft Clarity
     if (window.clarity) {
       window.clarity('event', eventName);
@@ -119,6 +127,14 @@
 
   // Track conversion events (for setup completion)
   function trackConversion() {
+    // Statsig conversion
+    if (window.statsig && window.statsig.logEvent) {
+      window.statsig.logEvent('conversion_setup_complete', null, {
+        conversion: true,
+        conversion_type: 'setup_complete'
+      });
+    }
+    
     // Microsoft Clarity conversion
     if (window.clarity) {
       window.clarity('event', 'conversion_setup_complete');
@@ -154,6 +170,16 @@
 
   // Helper to track form field interactions
   function trackFieldInteraction(fieldName, action, value) {
+    // Statsig
+    if (window.statsig && window.statsig.logEvent) {
+      window.statsig.logEvent(`field_${action}_${fieldName}`, null, {
+        field: fieldName,
+        action: action,
+        has_value: value ? true : false
+      });
+    }
+    
+    // Clarity
     if (window.clarity) {
       window.clarity('event', `field_${action}_${fieldName}`);
       if (value !== undefined && value !== null) {
@@ -169,12 +195,25 @@
     
     // Track when user leaves/returns to page
     document.addEventListener('visibilitychange', function() {
-      if (window.clarity) {
-        if (document.hidden) {
-          const sessionDuration = Math.round((Date.now() - sessionStart) / 1000);
+      const sessionDuration = Math.round((Date.now() - sessionStart) / 1000);
+      
+      if (document.hidden) {
+        // Statsig
+        if (window.statsig && window.statsig.logEvent) {
+          window.statsig.logEvent('page_hidden', null, { session_duration_seconds: sessionDuration });
+        }
+        // Clarity
+        if (window.clarity) {
           window.clarity('set', 'session_duration_seconds', String(sessionDuration));
           window.clarity('event', 'page_hidden');
-        } else {
+        }
+      } else {
+        // Statsig
+        if (window.statsig && window.statsig.logEvent) {
+          window.statsig.logEvent('page_visible');
+        }
+        // Clarity
+        if (window.clarity) {
           window.clarity('event', 'page_visible');
         }
       }
@@ -182,8 +221,17 @@
     
     // Track session duration on beforeunload
     window.addEventListener('beforeunload', function() {
+      const sessionDuration = Math.round((Date.now() - sessionStart) / 1000);
+      
+      // Statsig
+      if (window.statsig && window.statsig.logEvent) {
+        window.statsig.logEvent('session_end', null, {
+          session_duration_seconds: sessionDuration,
+          session_end_time: new Date().toISOString()
+        });
+      }
+      // Clarity
       if (window.clarity) {
-        const sessionDuration = Math.round((Date.now() - sessionStart) / 1000);
         window.clarity('set', 'session_duration_seconds', String(sessionDuration));
         window.clarity('set', 'session_end_time', new Date().toISOString());
       }
@@ -236,6 +284,41 @@
       },
 
       async init() {
+        // Initialize Statsig with user properties
+        if (window.statsig && window.statsig.initialize) {
+          const userId = sessionStorage.getItem('statsig_user_id') || 
+            'user_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+          sessionStorage.setItem('statsig_user_id', userId);
+          
+          try {
+            await window.statsig.initialize(
+              'client-eVtd4YnC1vrep0ybXLjra2k4EzQvhVTGUwhd6mdA25z',
+              { userID: userId },
+              { 
+                environment: { tier: 'production' },
+                customIDs: {
+                  page: 'setup',
+                  user_agent: navigator.userAgent,
+                  screen_resolution: `${window.screen.width}x${window.screen.height}`
+                }
+              }
+            );
+            
+            // Update user properties
+            if (window.statsig.updateUser) {
+              window.statsig.updateUser({
+                userID: userId,
+                custom: {
+                  page: 'setup',
+                  session_start: new Date().toISOString()
+                }
+              });
+            }
+          } catch (e) {
+            console.warn('Statsig initialization failed:', e);
+          }
+        }
+        
         // Set up Clarity session
         if (window.clarity) {
           // Generate or retrieve session ID for user identification
@@ -280,6 +363,9 @@
           this.loginError = 'Please enter a password';
           
           // Track validation error
+          if (window.statsig && window.statsig.logEvent) {
+            window.statsig.logEvent('login_validation_error', null, { reason: 'empty_password' });
+          }
           if (window.clarity) {
             window.clarity('event', 'login_validation_error');
           }
@@ -305,6 +391,18 @@
             this.showLoginModal = false;
             this.loginPassword = '';
             
+            // Update Statsig user properties
+            if (window.statsig && window.statsig.updateUser) {
+              const userId = sessionStorage.getItem('statsig_user_id');
+              window.statsig.updateUser({
+                userID: userId,
+                custom: {
+                  authenticated: true,
+                  login_time: new Date().toISOString()
+                }
+              });
+            }
+            
             // Set Clarity user as authenticated
             if (window.clarity) {
               window.clarity('set', 'authenticated', 'true');
@@ -315,6 +413,17 @@
             await this.refreshStatus();
           } else {
             this.loginError = data.error || 'Invalid password';
+            
+            // Track login failure
+            if (window.statsig && window.statsig.updateUser) {
+              const userId = sessionStorage.getItem('statsig_user_id');
+              window.statsig.updateUser({
+                userID: userId,
+                custom: {
+                  login_failure_reason: data.error || 'invalid_password'
+                }
+              });
+            }
             
             // Track login failure with error type
             if (window.clarity) {
@@ -327,6 +436,16 @@
           this.loginError = 'Connection error. Please try again.';
           
           // Track connection error
+          if (window.statsig && window.statsig.updateUser) {
+            const userId = sessionStorage.getItem('statsig_user_id');
+            window.statsig.updateUser({
+              userID: userId,
+              custom: {
+                login_failure_reason: 'connection_error'
+              }
+            });
+          }
+          
           if (window.clarity) {
             window.clarity('set', 'login_failure_reason', 'connection_error');
           }
@@ -354,6 +473,20 @@
           const j = await this.httpJson('/setup/api/status');
           this.configured = j.configured;
           this.openclawVersion = j.openclawVersion || '';
+          
+          // Update Statsig with configuration state
+          if (window.statsig && window.statsig.updateUser) {
+            const userId = sessionStorage.getItem('statsig_user_id');
+            window.statsig.updateUser({
+              userID: userId,
+              custom: {
+                configured: j.configured,
+                openclaw_version: this.openclawVersion,
+                gateway_running: j.gateway?.running || false,
+                gateway_starting: j.gateway?.starting || false
+              }
+            });
+          }
           
           // Update Clarity with configuration state
           if (window.clarity) {
@@ -404,6 +537,18 @@
         
         // Track provider selection
         if (group) {
+          // Update Statsig user properties
+          if (window.statsig && window.statsig.updateUser) {
+            const userId = sessionStorage.getItem('statsig_user_id');
+            window.statsig.updateUser({
+              userID: userId,
+              custom: {
+                selected_provider: this.selectedGroup,
+                provider_label: group.label
+              }
+            });
+          }
+          
           // Set Clarity tags for current selection
           if (window.clarity) {
             window.clarity('set', 'selected_provider', this.selectedGroup);
@@ -421,6 +566,18 @@
         if (this.step < this.totalSteps) {
           this.step++;
           
+          // Update Statsig user properties
+          if (window.statsig && window.statsig.updateUser) {
+            const userId = sessionStorage.getItem('statsig_user_id');
+            window.statsig.updateUser({
+              userID: userId,
+              custom: {
+                setup_step: this.step,
+                setup_progress: `${this.step}/${this.totalSteps}`
+              }
+            });
+          }
+          
           // Set Clarity tag for current step
           if (window.clarity) {
             window.clarity('set', 'setup_step', String(this.step));
@@ -434,6 +591,18 @@
       prevStep() {
         if (this.step > 1) {
           this.step--;
+          
+          // Update Statsig user properties
+          if (window.statsig && window.statsig.updateUser) {
+            const userId = sessionStorage.getItem('statsig_user_id');
+            window.statsig.updateUser({
+              userID: userId,
+              custom: {
+                setup_step: this.step,
+                setup_progress: `${this.step}/${this.totalSteps}`
+              }
+            });
+          }
           
           // Set Clarity tag for current step
           if (window.clarity) {
@@ -469,6 +638,22 @@
           has_custom_model: !!this.model
         };
         
+        // Update Statsig user properties
+        if (window.statsig && window.statsig.updateUser) {
+          const userId = sessionStorage.getItem('statsig_user_id');
+          window.statsig.updateUser({
+            userID: userId,
+            custom: {
+              setup_provider: this.selectedGroup,
+              setup_auth_method: this.selectedAuth,
+              has_telegram: !!this.telegramToken,
+              has_discord: !!this.discordToken,
+              has_custom_model: !!this.model,
+              model_name: this.model || ''
+            }
+          });
+        }
+        
         // Set Clarity tags for setup configuration
         if (window.clarity) {
           window.clarity('set', 'setup_provider', this.selectedGroup);
@@ -496,6 +681,18 @@
           this.log += (j.output || JSON.stringify(j, null, 2));
           
           if (j.ok || (j.output && !j.output.toLowerCase().includes('error'))) {
+            // Update Statsig for successful setup
+            if (window.statsig && window.statsig.updateUser) {
+              const userId = sessionStorage.getItem('statsig_user_id');
+              window.statsig.updateUser({
+                userID: userId,
+                custom: {
+                  setup_status: 'completed',
+                  setup_completed_at: new Date().toISOString()
+                }
+              });
+            }
+            
             // Set Clarity tags for successful setup
             if (window.clarity) {
               window.clarity('set', 'setup_status', 'completed');
@@ -511,10 +708,24 @@
             // Track conversion across all platforms
             trackConversion();
           } else {
+            const errorMsg = j.output ? j.output.substring(0, 200) : 'unknown';
+            
+            // Update Statsig for failed setup
+            if (window.statsig && window.statsig.updateUser) {
+              const userId = sessionStorage.getItem('statsig_user_id');
+              window.statsig.updateUser({
+                userID: userId,
+                custom: {
+                  setup_status: 'failed',
+                  setup_error: errorMsg
+                }
+              });
+            }
+            
             // Set Clarity tags for failed setup
             if (window.clarity) {
               window.clarity('set', 'setup_status', 'failed');
-              window.clarity('set', 'setup_error', j.output ? j.output.substring(0, 200) : 'unknown');
+              window.clarity('set', 'setup_error', errorMsg);
             }
             
             trackEvent('setup_failed', {
@@ -526,11 +737,24 @@
           await this.refreshStatus();
         } catch (e) {
           this.log += '\nError: ' + String(e) + '\n';
+          const errorMsg = String(e).substring(0, 200);
+          
+          // Update Statsig for error
+          if (window.statsig && window.statsig.updateUser) {
+            const userId = sessionStorage.getItem('statsig_user_id');
+            window.statsig.updateUser({
+              userID: userId,
+              custom: {
+                setup_status: 'error',
+                setup_error: errorMsg
+              }
+            });
+          }
           
           // Set Clarity tags for error
           if (window.clarity) {
             window.clarity('set', 'setup_status', 'error');
-            window.clarity('set', 'setup_error', String(e).substring(0, 200));
+            window.clarity('set', 'setup_error', errorMsg);
           }
           
           trackEvent('setup_failed', {
