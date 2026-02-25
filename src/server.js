@@ -184,6 +184,31 @@ async function startGateway() {
     console.log(`[gateway] doctor check: ${err.message}`);
   }
 
+  // Configure allowed origins for Railway/external access
+  try {
+    console.log("[gateway] configuring CORS origins...");
+    const allowedOrigins = ["http://localhost:8080", "http://127.0.0.1:8080"];
+    
+    if (process.env.RAILWAY_PUBLIC_DOMAIN) {
+      allowedOrigins.push(`https://${process.env.RAILWAY_PUBLIC_DOMAIN}`);
+    }
+    if (process.env.RAILWAY_STATIC_URL) {
+      allowedOrigins.push(process.env.RAILWAY_STATIC_URL);
+    }
+    allowedOrigins.push("https://*.railway.app");
+    
+    await runCmd(OPENCLAW_CLI, [
+      "config",
+      "set",
+      "--json",
+      "gateway.controlUi.allowedOrigins",
+      JSON.stringify(allowedOrigins),
+    ]);
+    console.log(`[gateway] configured origins: ${allowedOrigins.join(", ")}`);
+  } catch (err) {
+    console.log(`[gateway] origin config warning: ${err.message}`);
+  }
+
   // Remove lock files
   for (const lockPath of [
     path.join(STATE_DIR, "gateway.lock"),
@@ -729,6 +754,32 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {  // Extend ti
         ],
       );
       extra += `[config] gateway.trustedProxies exit=${proxiesResult.code}\n`;
+
+      // Configure allowed origins for Railway deployment
+      const allowedOrigins = ["http://localhost:8080", "http://127.0.0.1:8080"];
+      
+      // Add Railway public domain if available
+      if (process.env.RAILWAY_PUBLIC_DOMAIN) {
+        allowedOrigins.push(`https://${process.env.RAILWAY_PUBLIC_DOMAIN}`);
+      }
+      if (process.env.RAILWAY_STATIC_URL) {
+        allowedOrigins.push(process.env.RAILWAY_STATIC_URL);
+      }
+      
+      // Always allow wildcard for Railway subdomains (they use random subdomains during deployment)
+      allowedOrigins.push("https://*.railway.app");
+      
+      const originsResult = await runCmd(
+        OPENCLAW_CLI,
+        [
+          "config",
+          "set",
+          "--json",
+          "gateway.controlUi.allowedOrigins",
+          JSON.stringify(allowedOrigins),
+        ],
+      );
+      extra += `[config] gateway.controlUi.allowedOrigins exit=${originsResult.code}\n`;
 
       // Set model if provided
       if (payload.model?.trim()) {
