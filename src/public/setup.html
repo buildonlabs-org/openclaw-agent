@@ -24,6 +24,15 @@
     });
   </script>
 
+  <!-- Microsoft Clarity -->
+  <script type="text/javascript">
+    (function(c,l,a,r,i,t,y){
+        c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+        t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+        y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+    })(window, document, "clarity", "script", "vmrjztqvbn");
+  </script>
+
   <!-- Hotjar / Contentsquare -->
   <script async src="https://t.contentsquare.net/uxa/94c4cffa5a205.js"></script>
 
@@ -69,6 +78,19 @@
   <script>
   // Analytics tracking helper
   function trackEvent(eventName, properties) {
+    // Microsoft Clarity
+    if (window.clarity) {
+      window.clarity('event', eventName);
+      // Set custom tags for better filtering in Clarity
+      if (properties) {
+        Object.entries(properties).forEach(([key, value]) => {
+          if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+            window.clarity('set', key, String(value));
+          }
+        });
+      }
+    }
+    
     // Amplitude
     if (window.amplitude && window.amplitude.track) {
       window.amplitude.track(eventName, properties);
@@ -97,6 +119,13 @@
 
   // Track conversion events (for setup completion)
   function trackConversion() {
+    // Microsoft Clarity conversion
+    if (window.clarity) {
+      window.clarity('event', 'conversion_setup_complete');
+      window.clarity('set', 'conversion', 'true');
+      window.clarity('set', 'conversion_type', 'setup_complete');
+    }
+    
     // TikTok CompleteRegistration event
     if (window.ttq) {
       window.ttq.track('CompleteRegistration');
@@ -122,6 +151,44 @@
       });
     }
   }
+
+  // Helper to track form field interactions
+  function trackFieldInteraction(fieldName, action, value) {
+    if (window.clarity) {
+      window.clarity('event', `field_${action}_${fieldName}`);
+      if (value !== undefined && value !== null) {
+        // Track whether field has value (don't track actual sensitive values)
+        window.clarity('set', `${fieldName}_filled`, value ? 'true' : 'false');
+      }
+    }
+  }
+
+  // Track page visibility changes and session duration
+  document.addEventListener('DOMContentLoaded', function() {
+    const sessionStart = Date.now();
+    
+    // Track when user leaves/returns to page
+    document.addEventListener('visibilitychange', function() {
+      if (window.clarity) {
+        if (document.hidden) {
+          const sessionDuration = Math.round((Date.now() - sessionStart) / 1000);
+          window.clarity('set', 'session_duration_seconds', String(sessionDuration));
+          window.clarity('event', 'page_hidden');
+        } else {
+          window.clarity('event', 'page_visible');
+        }
+      }
+    });
+    
+    // Track session duration on beforeunload
+    window.addEventListener('beforeunload', function() {
+      if (window.clarity) {
+        const sessionDuration = Math.round((Date.now() - sessionStart) / 1000);
+        window.clarity('set', 'session_duration_seconds', String(sessionDuration));
+        window.clarity('set', 'session_end_time', new Date().toISOString());
+      }
+    });
+  });
 
   document.addEventListener('alpine:init', () => {
     Alpine.data('setupApp', () => ({
@@ -169,6 +236,20 @@
       },
 
       async init() {
+        // Set up Clarity session
+        if (window.clarity) {
+          // Generate or retrieve session ID for user identification
+          let sessionId = sessionStorage.getItem('clarity_session_id');
+          if (!sessionId) {
+            sessionId = 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+            sessionStorage.setItem('clarity_session_id', sessionId);
+          }
+          window.clarity('identify', sessionId);
+          window.clarity('set', 'page', 'setup');
+          window.clarity('set', 'user_agent', navigator.userAgent);
+          window.clarity('set', 'screen_resolution', `${window.screen.width}x${window.screen.height}`);
+        }
+        
         // Track page view
         trackEvent('page_view_setup', { configured: this.configured });
         
@@ -197,6 +278,12 @@
       async login() {
         if (!this.loginPassword.trim()) {
           this.loginError = 'Please enter a password';
+          
+          // Track validation error
+          if (window.clarity) {
+            window.clarity('event', 'login_validation_error');
+          }
+          
           return;
         }
 
@@ -217,14 +304,33 @@
             this.isAuthenticated = true;
             this.showLoginModal = false;
             this.loginPassword = '';
+            
+            // Set Clarity user as authenticated
+            if (window.clarity) {
+              window.clarity('set', 'authenticated', 'true');
+              window.clarity('set', 'login_time', new Date().toISOString());
+            }
+            
             trackEvent('setup_login_success', {});
             await this.refreshStatus();
           } else {
             this.loginError = data.error || 'Invalid password';
+            
+            // Track login failure with error type
+            if (window.clarity) {
+              window.clarity('set', 'login_failure_reason', data.error || 'invalid_password');
+            }
+            
             trackEvent('setup_login_failed', { error: data.error });
           }
         } catch (e) {
           this.loginError = 'Connection error. Please try again.';
+          
+          // Track connection error
+          if (window.clarity) {
+            window.clarity('set', 'login_failure_reason', 'connection_error');
+          }
+          
           trackEvent('setup_login_failed', { error: 'connection_error' });
         } finally {
           this.loading = false;
@@ -248,6 +354,16 @@
           const j = await this.httpJson('/setup/api/status');
           this.configured = j.configured;
           this.openclawVersion = j.openclawVersion || '';
+          
+          // Update Clarity with configuration state
+          if (window.clarity) {
+            window.clarity('set', 'configured', j.configured ? 'true' : 'false');
+            window.clarity('set', 'openclaw_version', this.openclawVersion);
+            if (j.gateway) {
+              window.clarity('set', 'gateway_running', j.gateway.running ? 'true' : 'false');
+              window.clarity('set', 'gateway_starting', j.gateway.starting ? 'true' : 'false');
+            }
+          }
           
           // Update status with gateway info
           let statusText = j.configured ? 'Configured' : 'Not configured - run setup below';
@@ -288,6 +404,12 @@
         
         // Track provider selection
         if (group) {
+          // Set Clarity tags for current selection
+          if (window.clarity) {
+            window.clarity('set', 'selected_provider', this.selectedGroup);
+            window.clarity('set', 'provider_label', group.label);
+          }
+          
           trackEvent('setup_provider_selected', { 
             provider: this.selectedGroup,
             provider_label: group.label 
@@ -298,6 +420,13 @@
       nextStep() {
         if (this.step < this.totalSteps) {
           this.step++;
+          
+          // Set Clarity tag for current step
+          if (window.clarity) {
+            window.clarity('set', 'setup_step', String(this.step));
+            window.clarity('set', 'setup_progress', `${this.step}/${this.totalSteps}`);
+          }
+          
           trackEvent('setup_step_viewed', { step: this.step, total_steps: this.totalSteps });
         }
       },
@@ -305,6 +434,13 @@
       prevStep() {
         if (this.step > 1) {
           this.step--;
+          
+          // Set Clarity tag for current step
+          if (window.clarity) {
+            window.clarity('set', 'setup_step', String(this.step));
+            window.clarity('set', 'setup_progress', `${this.step}/${this.totalSteps}`);
+          }
+          
           trackEvent('setup_step_viewed', { step: this.step, total_steps: this.totalSteps });
         }
       },
@@ -325,13 +461,27 @@
         this.log = 'Running...\n';
 
         // Track setup started
-        trackEvent('setup_started', {
+        const setupMetadata = {
           provider: this.selectedGroup,
           auth_method: this.selectedAuth,
           has_telegram: !!this.telegramToken,
           has_discord: !!this.discordToken,
           has_custom_model: !!this.model
-        });
+        };
+        
+        // Set Clarity tags for setup configuration
+        if (window.clarity) {
+          window.clarity('set', 'setup_provider', this.selectedGroup);
+          window.clarity('set', 'setup_auth_method', this.selectedAuth);
+          window.clarity('set', 'has_telegram', this.telegramToken ? 'true' : 'false');
+          window.clarity('set', 'has_discord', this.discordToken ? 'true' : 'false');
+          window.clarity('set', 'has_custom_model', this.model ? 'true' : 'false');
+          if (this.model) {
+            window.clarity('set', 'model_name', this.model);
+          }
+        }
+        
+        trackEvent('setup_started', setupMetadata);
 
         try {
           const res = await fetch('/setup/api/run', {
@@ -346,6 +496,12 @@
           this.log += (j.output || JSON.stringify(j, null, 2));
           
           if (j.ok || (j.output && !j.output.toLowerCase().includes('error'))) {
+            // Set Clarity tags for successful setup
+            if (window.clarity) {
+              window.clarity('set', 'setup_status', 'completed');
+              window.clarity('set', 'setup_completed_at', new Date().toISOString());
+            }
+            
             trackEvent('setup_completed', {
               provider: this.selectedGroup,
               auth_method: this.selectedAuth,
@@ -355,6 +511,12 @@
             // Track conversion across all platforms
             trackConversion();
           } else {
+            // Set Clarity tags for failed setup
+            if (window.clarity) {
+              window.clarity('set', 'setup_status', 'failed');
+              window.clarity('set', 'setup_error', j.output ? j.output.substring(0, 200) : 'unknown');
+            }
+            
             trackEvent('setup_failed', {
               provider: this.selectedGroup,
               error: j.output || 'unknown'
@@ -364,6 +526,13 @@
           await this.refreshStatus();
         } catch (e) {
           this.log += '\nError: ' + String(e) + '\n';
+          
+          // Set Clarity tags for error
+          if (window.clarity) {
+            window.clarity('set', 'setup_status', 'error');
+            window.clarity('set', 'setup_error', String(e).substring(0, 200));
+          }
+          
           trackEvent('setup_failed', {
             provider: this.selectedGroup,
             error: String(e)
@@ -379,6 +548,13 @@
         this.pendingPairings = [];
         this.showPairingModal = true;
         this.loadPendingPairings();
+        
+        // Track modal opening in Clarity
+        if (window.clarity) {
+          window.clarity('event', 'pairing_modal_opened');
+          window.clarity('set', 'last_modal_opened', 'pairing');
+        }
+        
         trackEvent('setup_pairing_opened', {});
       },
 
@@ -411,17 +587,37 @@
         const channel = this.pairingChannel.trim().toLowerCase();
         if (channel !== 'telegram' && channel !== 'discord') {
           this.showPairingResult(false, 'Channel must be "telegram" or "discord"');
+          
+          // Track validation error
+          if (window.clarity) {
+            window.clarity('event', 'pairing_validation_error');
+            window.clarity('set', 'pairing_error', 'invalid_channel');
+          }
+          
           return;
         }
         const code = this.pairingCode.trim();
         if (!code) {
           this.showPairingResult(false, 'Please enter a pairing code');
+          
+          // Track validation error
+          if (window.clarity) {
+            window.clarity('event', 'pairing_validation_error');
+            window.clarity('set', 'pairing_error', 'empty_code');
+          }
+          
           return;
         }
         
         // Set loading immediately for instant feedback
         this.loading = true;
         this.log += '\nApproving pairing for ' + channel + '...\n';
+        
+        // Set Clarity tags for pairing attempt
+        if (window.clarity) {
+          window.clarity('set', 'pairing_channel', channel);
+          window.clarity('set', 'pairing_attempt', 'in_progress');
+        }
 
         try {
           const res = await fetch('/setup/api/pairing/approve', {
@@ -444,17 +640,38 @@
             this.log += '✓ ' + msg + '\n';
             this.log += '✓ User can now send messages to the bot!\n';
             this.showPairingResult(true, msg);
+            
+            // Set Clarity tags for successful pairing
+            if (window.clarity) {
+              window.clarity('set', 'pairing_attempt', 'success');
+              window.clarity('set', 'pairing_success_channel', channel);
+            }
+            
             trackEvent('setup_pairing_approved', { channel: channel });
           } else {
             const msg = result.output || result.error || 'Unknown error';
             this.log += '✗ Failed: ' + msg + '\n';
             this.log += 'Tip: Check if the pairing code expired (codes expire after ~5 minutes)\n';
             this.showPairingResult(false, 'Pairing failed: ' + msg);
+            
+            // Set Clarity tags for failed pairing
+            if (window.clarity) {
+              window.clarity('set', 'pairing_attempt', 'failed');
+              window.clarity('set', 'pairing_error', msg.substring(0, 200));
+            }
+            
             trackEvent('setup_pairing_failed', { channel: channel, error: msg });
           }
         } catch (e) {
           this.log += '✗ Error: ' + String(e) + '\n';
           this.showPairingResult(false, 'Pairing failed: ' + String(e));
+          
+          // Set Clarity tags for error
+          if (window.clarity) {
+            window.clarity('set', 'pairing_attempt', 'error');
+            window.clarity('set', 'pairing_error', String(e).substring(0, 200));
+          }
+          
           trackEvent('setup_pairing_failed', { channel: channel, error: String(e) });
         } finally {
           this.loading = false;
@@ -466,6 +683,13 @@
         
         // Set loading immediately for instant feedback
         this.loading = true;
+        
+        // Track reset in Clarity
+        if (window.clarity) {
+          window.clarity('event', 'setup_reset_confirmed');
+          window.clarity('set', 'setup_status', 'reset');
+        }
+        
         trackEvent('setup_reset', {});
         
         this.log = 'Resetting...\n';
@@ -474,9 +698,20 @@
           const res = await fetch('/setup/api/reset', { method: 'POST', credentials: 'same-origin' });
           const t = await res.text();
           this.log += t + '\n';
+          
+          // Clear Clarity setup tags after reset
+          if (window.clarity) {
+            window.clarity('set', 'configured', 'false');
+            window.clarity('set', 'setup_status', 'not_started');
+          }
+          
           await this.refreshStatus();
         } catch (e) {
           this.log += 'Error: ' + String(e) + '\n';
+          
+          if (window.clarity) {
+            window.clarity('set', 'reset_error', String(e).substring(0, 200));
+          }
         } finally {
           this.loading = false;
         }
@@ -487,6 +722,12 @@
         this.loading = true;
         this.log = 'Running doctor...\n';
 
+        // Track doctor run in Clarity
+        if (window.clarity) {
+          window.clarity('event', 'doctor_started');
+          window.clarity('set', 'doctor_run_at', new Date().toISOString());
+        }
+        
         trackEvent('setup_doctor_ran', {});
 
         try {
@@ -501,11 +742,29 @@
           this.log += (j.output || JSON.stringify(j, null, 2));
           if (j.ok) {
             this.log += '\n✓ Doctor completed successfully\n';
+            
+            // Track successful doctor run
+            if (window.clarity) {
+              window.clarity('set', 'doctor_status', 'success');
+              window.clarity('event', 'doctor_success');
+            }
           } else {
             this.log += '\n✗ Doctor found issues\n';
+            
+            // Track doctor issues
+            if (window.clarity) {
+              window.clarity('set', 'doctor_status', 'issues_found');
+              window.clarity('event', 'doctor_issues_found');
+            }
           }
         } catch (e) {
           this.log += 'Error: ' + String(e) + '\n';
+          
+          // Track doctor error
+          if (window.clarity) {
+            window.clarity('set', 'doctor_status', 'error');
+            window.clarity('set', 'doctor_error', String(e).substring(0, 200));
+          }
         } finally {
           this.loading = false;
         }
@@ -626,12 +885,26 @@
 
             <div>
               <label class="block text-xs uppercase tracking-wide text-neutral-500 font-medium mb-2">API Key / Token</label>
-              <input x-model="authSecret" type="password" placeholder="Paste your API key or token" class="w-full bg-neutral-50 dark:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 rounded-lg px-4 py-3 text-sm placeholder-neutral-400 dark:placeholder-neutral-600 focus:outline-none focus:border-red-500 transition-colors" />
+              <input 
+                x-model="authSecret" 
+                type="password" 
+                placeholder="Paste your API key or token" 
+                @focus="trackFieldInteraction('api_key', 'focus')" 
+                @blur="trackFieldInteraction('api_key', 'blur', authSecret)" 
+                class="w-full bg-neutral-50 dark:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 rounded-lg px-4 py-3 text-sm placeholder-neutral-400 dark:placeholder-neutral-600 focus:outline-none focus:border-red-500 transition-colors" 
+              />
             </div>
 
             <div>
               <label class="block text-xs uppercase tracking-wide text-neutral-500 font-medium mb-2">Model (optional)</label>
-              <input x-model="model" type="text" placeholder="e.g. gpt-4o-mini, claude-sonnet-4" class="w-full bg-neutral-50 dark:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 rounded-lg px-4 py-3 text-sm placeholder-neutral-400 dark:placeholder-neutral-600 focus:outline-none focus:border-red-500 transition-colors" />
+              <input 
+                x-model="model" 
+                type="text" 
+                placeholder="e.g. gpt-4o-mini, claude-sonnet-4" 
+                @focus="trackFieldInteraction('model', 'focus')" 
+                @blur="trackFieldInteraction('model', 'blur', model)" 
+                class="w-full bg-neutral-50 dark:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 rounded-lg px-4 py-3 text-sm placeholder-neutral-400 dark:placeholder-neutral-600 focus:outline-none focus:border-red-500 transition-colors" 
+              />
               <p class="text-xs text-neutral-500 dark:text-neutral-600 mt-2">Leave blank to use default model</p>
             </div>
           </div>
@@ -651,7 +924,14 @@
                 </div>
                 <span class="font-medium">Telegram</span>
               </div>
-              <input x-model="telegramToken" type="password" placeholder="Bot token from @BotFather" @blur="telegramToken && trackEvent('setup_channel_added', { channel: 'telegram' })" class="w-full bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-lg px-4 py-3 text-sm placeholder-neutral-400 dark:placeholder-neutral-600 focus:outline-none focus:border-sky-500 transition-colors" />
+              <input 
+                x-model="telegramToken" 
+                type="password" 
+                placeholder="Bot token from @BotFather" 
+                @focus="trackFieldInteraction('telegram_token', 'focus')" 
+                @blur="telegramToken && trackEvent('setup_channel_added', { channel: 'telegram' }); trackFieldInteraction('telegram_token', 'blur', telegramToken)" 
+                class="w-full bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-lg px-4 py-3 text-sm placeholder-neutral-400 dark:placeholder-neutral-600 focus:outline-none focus:border-sky-500 transition-colors" 
+              />
               <p class="text-xs text-neutral-500 dark:text-neutral-600 mt-2">Message <code class="bg-neutral-200 dark:bg-neutral-800 px-1.5 py-0.5 rounded text-sky-600 dark:text-sky-400">@BotFather</code> on Telegram and run <code class="bg-neutral-200 dark:bg-neutral-800 px-1.5 py-0.5 rounded text-sky-600 dark:text-sky-400">/newbot</code></p>
             </div>
 
@@ -662,7 +942,14 @@
                 </div>
                 <span class="font-medium">Discord</span>
               </div>
-              <input x-model="discordToken" type="password" placeholder="Bot token from Developer Portal" @blur="discordToken && trackEvent('setup_channel_added', { channel: 'discord' })" class="w-full bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-lg px-4 py-3 text-sm placeholder-neutral-400 dark:placeholder-neutral-600 focus:outline-none focus:border-indigo-500 transition-colors" />
+              <input 
+                x-model="discordToken" 
+                type="password" 
+                placeholder="Bot token from Developer Portal" 
+                @focus="trackFieldInteraction('discord_token', 'focus')" 
+                @blur="discordToken && trackEvent('setup_channel_added', { channel: 'discord' }); trackFieldInteraction('discord_token', 'blur', discordToken)" 
+                class="w-full bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-lg px-4 py-3 text-sm placeholder-neutral-400 dark:placeholder-neutral-600 focus:outline-none focus:border-indigo-500 transition-colors" 
+              />
               <p class="text-xs text-neutral-500 dark:text-neutral-600 mt-2">Create a bot at <code class="bg-neutral-200 dark:bg-neutral-800 px-1.5 py-0.5 rounded text-indigo-600 dark:text-indigo-400">discord.com/developers/applications</code></p>
             </div>
           </div>
