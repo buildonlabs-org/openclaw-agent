@@ -74,6 +74,8 @@ function isConfigured() {
 let gatewayProc = null;
 let gatewayStarting = null;
 let shuttingDown = false;
+let restartAttempts = 0;
+const MAX_RESTART_DELAY = 30000; // Max 30 seconds between restarts
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -107,12 +109,80 @@ async function waitForGatewayReady(opts = {}) {
   return false;
 }
 
+async function killExistingGatewayProcesses() {
+  try {
+    // Find and kill any openclaw gateway processes
+    const { stdout } = await new Promise((resolve, reject) => {
+      childProcess.exec("pgrep -f 'openclaw gateway run'", (error, stdout, stderr) => {
+        // pgrep returns exit code 1 if no processes found, which is fine
+        resolve({ stdout, stderr, error });
+      });
+    });
+    
+    if (stdout.trim()) {
+      const pids = stdout.trim().split('\n');
+      console.log(`[gateway] found existing processes: ${pids.join(', ')}`);
+      
+      for (const pid of pids) {
+        try {
+          // Skip if it's the current process or our child
+          if (gatewayProc && String(gatewayProc.pid) === pid) continue;
+          
+          console.log(`[gateway] killing orphaned process ${pid}...`);
+          process.kill(Number(pid), 'SIGTERM');
+          
+          // Wait a bit for graceful shutdown
+          await sleep(1000);
+          
+          // Force kill if still running
+          try {
+            process.kill(Number(pid), 0); // Check if still exists
+            console.log(`[gateway] force killing process ${pid}...`);
+            process.kill(Number(pid), 'SIGKILL');
+          } catch {
+            // Process already dead
+          }
+        } catch (err) {
+          // Process might already be dead, ignore
+          console.log(`[gateway] process ${pid} cleanup: ${err.message}`);
+        }
+      }
+      
+      // Give processes time to fully exit
+      await sleep(500);
+    }
+  } catch (err) {
+    console.error(`[gateway] error cleaning up processes: ${err.message}`);
+  }
+}
+
 async function startGateway() {
   if (gatewayProc) return;
   if (!isConfigured()) throw new Error("Gateway cannot start: not configured");
 
   fs.mkdirSync(STATE_DIR, { recursive: true });
   fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
+
+  // Kill any orphaned gateway processes first
+  await killExistingGatewayProcesses();
+
+  // Apply any pending doctor fixes automatically
+  try {
+    console.log("[gateway] checking for doctor fixes...");
+    const result = await runCmd(OPENCLAW_CLI, ["doctor", "--fix"], {
+      env: {
+        ...process.env,
+        OPENCLAW_STATE_DIR: STATE_DIR,
+        OPENCLAW_WORKSPACE_DIR: WORKSPACE_DIR,
+      },
+    });
+    if (result.output.trim()) {
+      console.log("[gateway] applied doctor fixes");
+    }
+  } catch (err) {
+    // Non-critical, continue anyway
+    console.log(`[gateway] doctor check: ${err.message}`);
+  }
 
   // Remove lock files
   for (const lockPath of [
@@ -164,14 +234,17 @@ async function startGateway() {
     console.error(`[gateway] exited code=${code} signal=${signal}`);
     gatewayProc = null;
     if (!shuttingDown && isConfigured()) {
-      console.log("[gateway] scheduling auto-restart in 2s...");
+      // Exponential backoff: 2s, 4s, 8s, 16s, 30s (max)
+      restartAttempts++;
+      const delay = Math.min(2000 * Math.pow(2, restartAttempts - 1), MAX_RESTART_DELAY);
+      console.log(`[gateway] scheduling auto-restart in ${delay / 1000}s (attempt ${restartAttempts})...`);
       setTimeout(() => {
         if (!shuttingDown && !gatewayProc && isConfigured()) {
           ensureGatewayRunning().catch((err) => {
             console.error(`[gateway] auto-restart failed: ${err.message}`);
           });
         }
-      }, 2000);
+      }, delay);
     }
   });
 }
@@ -183,7 +256,11 @@ async function ensureGatewayRunning() {
   gatewayStarting = (async () => {
     try {
       await startGateway();
-      await waitForGatewayReady();
+      const isReady = await waitForGatewayReady();
+      if (isReady) {
+        // Reset restart attempts counter on successful start
+        restartAttempts = 0;
+      }
     } finally {
       gatewayStarting = null;
     }

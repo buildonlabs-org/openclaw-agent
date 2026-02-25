@@ -66,6 +66,24 @@
     }
   </script>
 
+  <!-- Statsig -->
+  <script src="https://cdn.jsdelivr.net/npm/@statsig/js-client@3/build/statsig-js-client+session-replay+web-analytics.min.js?apikey=client-eVtd4YnC1vrep0ybXLjra2k4EzQvhVTGUwhd6mdA25z"></script>
+  <script>
+    // Initialize Statsig
+    if (window.statsig) {
+      window.statsig.initialize(
+        'client-eVtd4YnC1vrep0ybXLjra2k4EzQvhVTGUwhd6mdA25z',
+        { userID: 'anonymous_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9) },
+        { environment: { tier: 'production' } }
+      ).then(() => {
+        // Track page view
+        if (window.statsig.logEvent) {
+          window.statsig.logEvent('page_view_loading', null, { page: 'loading' });
+        }
+      });
+    }
+  </script>
+
   <!-- Hotjar / Contentsquare -->
   <script async src="https://t.contentsquare.net/uxa/94c4cffa5a205.js"></script>
 
