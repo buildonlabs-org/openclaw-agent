@@ -184,6 +184,20 @@ async function startGateway() {
     console.log(`[gateway] doctor check: ${err.message}`);
   }
 
+  // Configure control UI authentication bypass
+  try {
+    console.log("[gateway] configuring control UI settings...");
+    await runCmd(OPENCLAW_CLI, [
+      "config",
+      "set",
+      "gateway.controlUi.allowInsecureAuth",
+      "true",
+    ]);
+    console.log("[gateway] allowInsecureAuth: true");
+  } catch (err) {
+    console.log(`[gateway] allowInsecureAuth config warning: ${err.message}`);
+  }
+
   // Configure allowed origins for Railway/external access
   try {
     console.log("[gateway] configuring CORS origins...");
