@@ -628,6 +628,56 @@ app.get("/setup/api/gateway/logs", requireSetupAuth, async (_req, res) => {
   }
 });
 
+// GET /setup/api/models - List available models (for setup wizard)
+app.get("/setup/api/models", requireSetupAuth, async (req, res) => {
+  try {
+    // Support provider filter and --all flag
+    const provider = req.query.provider;
+    const args = ["models", "list", "--all"];
+    if (provider) {
+      args.push("--provider", provider);
+    }
+    const result = await runCmd(OPENCLAW_CLI, args);
+    
+    // Parse output to extract model info
+    const lines = result.output.trim().split('\n');
+    const models = [];
+    
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed && !trimmed.startsWith('#') && !trimmed.startsWith('=')) {
+        // Try to parse format like: "provider/model-name (context-window)"
+        const match = trimmed.match(/^([^\/]+)\/([^\s]+)(?:\s+\(([^)]+)\))?/);
+        if (match) {
+          models.push({
+            provider: match[1],
+            name: match[2],
+            fullName: `${match[1]}/${match[2]}`,
+            details: match[3] || null,
+            raw: trimmed
+          });
+        } else {
+          // Fallback: just store the raw line
+          models.push({
+            raw: trimmed
+          });
+        }
+      }
+    }
+    
+    res.json({
+      ok: true,
+      models,
+      exitCode: result.code
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message 
+    });
+  }
+});
+
 function buildOnboardArgs(payload) {
   const args = [
     "onboard",
@@ -2130,9 +2180,15 @@ app.get("/api/channels", requireApiKey, async (_req, res) => {
 });
 
 // GET /api/models - List available models
-app.get("/api/models", requireApiKey, async (_req, res) => {
+app.get("/api/models", requireApiKey, async (req, res) => {
   try {
-    const result = await runCmd(OPENCLAW_CLI, ["models", "list"]);
+    // Support provider filter and --all flag
+    const provider = req.query.provider;
+    const args = ["models", "list", "--all"];
+    if (provider) {
+      args.push("--provider", provider);
+    }
+    const result = await runCmd(OPENCLAW_CLI, args);
     
     // Parse output to extract model info
     const lines = result.output.trim().split('\n');
