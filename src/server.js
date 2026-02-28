@@ -1288,9 +1288,181 @@ app.post("/api/doctor", requireApiKey, async (req, res) => {
   });
 });
 
+// GET /api/config/current - Get current configuration for easy reconfiguration
+app.get("/api/config/current", requireApiKey, async (_req, res) => {
+  try {
+    if (!isConfigured()) {
+      return res.status(404).json({
+        ok: false,
+        error: "Not configured yet",
+        hint: "Use POST /api/configure to set up the agent first"
+      });
+    }
+
+    // Read current configuration values
+    const configValues = {};
+    const configKeys = [
+      "aiProvider",
+      "models.default",
+      "channels.telegram",
+      "channels.discord"
+    ];
+
+    for (const key of configKeys) {
+      try {
+        const result = await runCmd(OPENCLAW_CLI, ["config", "get", key]);
+        if (result.code === 0 && result.output.trim()) {
+          try {
+            configValues[key] = JSON.parse(result.output);
+          } catch {
+            configValues[key] = result.output.trim();
+          }
+        }
+      } catch {
+        // Key doesn't exist, skip
+      }
+    }
+
+    // Map to user-friendly format
+    const provider = configValues.aiProvider;
+    const model = configValues["models.default"];
+    const telegram = configValues["channels.telegram"];
+    const discord = configValues["channels.discord"];
+
+    res.json({
+      ok: true,
+      config: {
+        provider,
+        model,
+        telegram: telegram?.enabled ? {
+          enabled: telegram.enabled,
+          dmPolicy: telegram.dmPolicy,
+          // Don't return the token for security
+          hasToken: Boolean(telegram.botToken)
+        } : null,
+        discord: discord?.enabled ? {
+          enabled: discord.enabled,
+          // Don't return the token for security
+          hasToken: Boolean(discord.token)
+        } : null
+      },
+      hint: "Use this data to avoid re-entering API keys when reconfiguring. Note: tokens are not returned for security."
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
+// POST /api/channels/update - Update channel configuration without full reconfigure
+app.post("/api/channels/update", requireApiKey, async (req, res) => {
+  try {
+    if (!isConfigured()) {
+      return res.status(400).json({
+        ok: false,
+        error: "Agent not configured yet",
+        hint: "Use POST /api/configure first to set up the agent"
+      });
+    }
+
+    const { telegram, discord } = req.body || {};
+    let output = "";
+    let restartNeeded = false;
+
+    // Update Telegram config if provided
+    if (telegram) {
+      restartNeeded = true;
+      const telegramConfig = {
+        enabled: telegram.enabled !== false,
+        dmPolicy: telegram.dmPolicy || "pairing",
+        botToken: telegram.token,
+        groupPolicy: telegram.groupPolicy || "allowlist",
+        streamMode: telegram.streamMode || "partial"
+      };
+      
+      const result = await runCmd(
+        OPENCLAW_CLI,
+        ["config", "set", "--json", "channels.telegram", JSON.stringify(telegramConfig)]
+      );
+      output += `Telegram config updated (exit=${result.code})\n${result.output || ""}\n`;
+    }
+
+    // Update Discord config if provided
+    if (discord) {
+      restartNeeded = true;
+      const discordConfig = {
+        enabled: discord.enabled !== false,
+        token: discord.token,
+        groupPolicy: discord.groupPolicy || "allowlist",
+        dm: { policy: discord.dmPolicy || "pairing" }
+      };
+      
+      const result = await runCmd(
+        OPENCLAW_CLI,
+        ["config", "set", "--json", "channels.discord", JSON.stringify(discordConfig)]
+      );
+      output += `Discord config updated (exit=${result.code})\n${result.output || ""}\n`;
+    }
+
+    if (!telegram && !discord) {
+      return res.status(400).json({
+        ok: false,
+        error: "No channel updates provided",
+        hint: "Include 'telegram' or 'discord' in request body"
+      });
+    }
+
+    // Restart gateway to apply changes
+    if (restartNeeded) {
+      output += "\nRestarting gateway...\n";
+      await restartGateway();
+      output += "Gateway restarted successfully\n";
+    }
+
+    res.json({
+      ok: true,
+      output,
+      message: "Channel configuration updated successfully"
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
 // POST /api/reset - Delete configuration and stop gateway
 app.post("/api/reset", requireApiKey, async (req, res) => {
   try {
+    // Read current config before deleting (for user convenience)
+    let currentConfig = null;
+    if (isConfigured()) {
+      try {
+        const configValues = {};
+        const configKeys = ["aiProvider", "models.default"];
+        
+        for (const key of configKeys) {
+          try {
+            const result = await runCmd(OPENCLAW_CLI, ["config", "get", key]);
+            if (result.code === 0 && result.output.trim()) {
+              try {
+                configValues[key] = JSON.parse(result.output);
+              } catch {
+                configValues[key] = result.output.trim();
+              }
+            }
+          } catch {
+            // Key doesn't exist, skip
+          }
+        }
+        
+        currentConfig = {
+          provider: configValues.aiProvider,
+          model: configValues["models.default"],
+          hint: "Save these values to avoid re-entering them during reconfiguration. You'll still need to provide your API key again."
+        };
+      } catch {
+        // Ignore errors reading config
+      }
+    }
+    
     // Stop gateway first
     if (gatewayProc) {
       gatewayProc.kill("SIGTERM");
@@ -1306,7 +1478,8 @@ app.post("/api/reset", requireApiKey, async (req, res) => {
     
     res.json({
       ok: true,
-      message: "Configuration deleted. Gateway stopped. Use POST /api/configure to set up again."
+      message: "Configuration deleted. Gateway stopped. Use POST /api/configure to set up again.",
+      previousConfig: currentConfig
     });
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) });

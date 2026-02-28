@@ -178,6 +178,8 @@ curl -X POST \
 }
 ```
 
+**💡 Tip:** If you need to update just the Telegram or Discord token without reconfiguring everything, use `POST /api/channels/update` instead (see Section 5b). This avoids having to re-enter your LLM API key.
+
 **Response (Error):**
 ```json
 {
@@ -269,6 +271,8 @@ curl -X POST \
 
 Delete configuration and stop the gateway. Use before reconfiguring.
 
+**Important:** This endpoint now returns your current provider and model configuration, so you don't need to re-enter them when reconfiguring (you'll still need to provide your API key again for security).
+
 **Request:**
 ```bash
 curl -X POST \
@@ -280,14 +284,127 @@ curl -X POST \
 ```json
 {
   "ok": true,
-  "message": "Configuration deleted. Gateway stopped. Use POST /api/configure to set up again."
+  "message": "Configuration deleted. Gateway stopped. Use POST /api/configure to set up again.",
+  "previousConfig": {
+    "provider": "openai",
+    "model": "gpt-4",
+    "hint": "Save these values to avoid re-entering them during reconfiguration. You'll still need to provide your API key again."
+  }
 }
 ```
 
 **Frontend Usage:**
 - Show as "Reset" or "Delete Configuration" action with confirmation dialog
-- After reset, redirect user to configuration form
+- **Save `previousConfig` values** and auto-populate them in the reconfiguration form
+- After reset, redirect user to configuration form with pre-filled provider and model
 - Disable action if agent is not configured
+
+---
+
+### 5a. Get Current Configuration
+
+**`GET /api/config/current`**
+
+Get the current configuration (provider, model, channels) without resetting. Useful for displaying current settings or preparing to update channels.
+
+**Use Case:** Before updating just the Telegram/Discord token, fetch current config to see what's configured. Tokens are not returned for security.
+
+**Request:**
+```bash
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+  https://your-agent.railway.app/api/config/current
+```
+
+**Response:**
+```json
+{
+  "ok": true,
+  "config": {
+    "provider": "openai",
+    "model": "gpt-4",
+    "telegram": {
+      "enabled": true,
+      "dmPolicy": "pairing",
+      "hasToken": true
+    },
+    "discord": null
+  },
+  "hint": "Use this data to avoid re-entering API keys when reconfiguring. Note: tokens are not returned for security."
+}
+```
+
+**Frontend Usage:**
+- Display current settings in a dashboard or settings page
+- Show which channels are configured (without exposing tokens)
+- Use `hasToken: true` to indicate a token is set
+- Allow users to see their config before making changes
+
+---
+
+### 5b. Update Channels Only
+
+**`POST /api/channels/update`**
+
+Update Telegram or Discord channel configuration **without** reconfiguring the entire agent. This allows you to change bot tokens without re-entering your LLM API key.
+
+**Use Case:** User wants to switch Telegram bots or add a Discord bot without touching their LLM configuration.
+
+**Request:**
+```bash
+curl -X POST \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "telegram": {
+      "enabled": true,
+      "token": "123456:ABC-new-token",
+      "dmPolicy": "pairing",
+      "groupPolicy": "allowlist"
+    }
+  }' \
+  https://your-agent.railway.app/api/channels/update
+```
+
+**Request Body:**
+```typescript
+{
+  telegram?: {
+    enabled?: boolean;       // Default: true
+    token: string;           // Required: New bot token
+    dmPolicy?: string;       // Default: "pairing"
+    groupPolicy?: string;    // Default: "allowlist"
+    streamMode?: string;     // Default: "partial"
+  };
+  discord?: {
+    enabled?: boolean;       // Default: true
+    token: string;           // Required: New bot token
+    dmPolicy?: string;       // Default: "pairing"
+    groupPolicy?: string;    // Default: "allowlist"
+  };
+}
+```
+
+**Response:**
+```json
+{
+  "ok": true,
+  "output": "Telegram config updated (exit=0)\n\nRestarting gateway...\nGateway restarted successfully\n",
+  "message": "Channel configuration updated successfully"
+}
+```
+
+**Frontend Usage:**
+- Add "Update Telegram Token" or "Update Discord Token" buttons in settings
+- Show a form with just the token field (no need to ask for LLM API key again)
+- After update, gateway restarts automatically to apply changes
+- Display success message and confirm channel is working
+
+**Example Flow:**
+1. User clicks "Update Telegram Bot"
+2. Frontend shows a simple form: "Enter new Telegram bot token:"
+3. Call `POST /api/channels/update` with new token
+4. Gateway restarts with new token
+5. Done! LLM config unchanged.
 
 ---
 
