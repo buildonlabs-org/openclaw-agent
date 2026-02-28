@@ -9,6 +9,8 @@ import express from "express";
 import httpProxy from "http-proxy";
 import { WebSocketServer } from "ws";
 
+import { OpenClawGatewayClient } from "./gatewayClient.js";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -36,6 +38,9 @@ function resolveGatewayToken() {
 
 const OPENCLAW_GATEWAY_TOKEN = resolveGatewayToken();
 process.env.OPENCLAW_GATEWAY_TOKEN = OPENCLAW_GATEWAY_TOKEN;
+
+// Wrapper API key for headless operations
+const WRAPPER_API_KEY = process.env.WRAPPER_API_KEY?.trim() || OPENCLAW_GATEWAY_TOKEN;
 
 const INTERNAL_GATEWAY_PORT = Number.parseInt(process.env.INTERNAL_GATEWAY_PORT ?? "18789", 10);
 const INTERNAL_GATEWAY_HOST = process.env.INTERNAL_GATEWAY_HOST ?? "127.0.0.1";
@@ -417,6 +422,26 @@ function requireSetupAuth(req, res, next) {
   return res.status(401).json({ error: 'Unauthorized', message: 'Please log in' });
 }
 
+// API key auth middleware for headless operations
+function requireApiKey(req, res, next) {
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  
+  if (!token) {
+    return res.status(401).json({ 
+      error: 'Unauthorized', 
+      message: 'Bearer token required. Set Authorization: Bearer <WRAPPER_API_KEY>' 
+    });
+  }
+  
+  // Accept either WRAPPER_API_KEY or OPENCLAW_GATEWAY_TOKEN for backward compat
+  if (token !== WRAPPER_API_KEY && token !== OPENCLAW_GATEWAY_TOKEN) {
+    return res.status(401).json({ error: 'Unauthorized', message: 'Invalid API key' });
+  }
+  
+  next();
+}
+
 // Express app
 const app = express();
 app.disable("x-powered-by");
@@ -675,6 +700,44 @@ const VALID_AUTH_CHOICES = [
   "gemini-api-key",
   "openrouter-api-key",
 ];
+
+// Cache for ClawHub API calls to avoid rate limits
+const clawhubCache = {
+  search: new Map(), // key: query, value: { data, timestamp }
+  ttl: 86400000, // 24 hours cache
+  
+  get(type, key) {
+    const cache = this[type];
+    if (!cache) return null;
+    
+    const entry = cache.get(key);
+    if (!entry) return null;
+    
+    const age = Date.now() - entry.timestamp;
+    if (age > this.ttl) {
+      cache.delete(key);
+      return null;
+    }
+    
+    return entry.data;
+  },
+  
+  set(type, key, data) {
+    const cache = this[type];
+    if (!cache) return;
+    
+    cache.set(key, {
+      data,
+      timestamp: Date.now()
+    });
+    
+    // Clean old entries (keep max 100 items)
+    if (cache.size > 100) {
+      const oldestKey = cache.keys().next().value;
+      cache.delete(oldestKey);
+    }
+  }
+};
 
 function validatePayload(payload) {
   if (payload.flow && !VALID_FLOWS.includes(payload.flow)) {
@@ -976,8 +1039,390 @@ app.post("/setup/api/doctor", requireSetupAuth, async (_req, res) => {
   });
 });
 
-// Device management API (backward compatible)
-app.get("/api/devices", async (_req, res) => {
+// ===== HEADLESS API ROUTES (Bearer token auth) =====
+
+// GET /api/status - Gateway and configuration status
+app.get("/api/status", requireApiKey, async (_req, res) => {
+  try {
+    const { version } = await getOpenclawInfo();
+    const configured = isConfigured();
+    const gatewayRunning = isGatewayReady();
+    const starting = isGatewayStarting();
+    let gatewayReachable = false;
+
+    if (gatewayRunning) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 3000);
+        const r = await fetch(`${GATEWAY_TARGET}/`, { 
+          signal: controller.signal,
+          headers: { Authorization: `Bearer ${OPENCLAW_GATEWAY_TOKEN}` }
+        });
+        clearTimeout(timeout);
+        gatewayReachable = r !== null;
+      } catch {}
+    }
+
+    res.json({
+      ok: true,
+      configured,
+      openclawVersion: version,
+      gateway: {
+        running: gatewayRunning,
+        starting,
+        reachable: gatewayReachable,
+        pid: gatewayProc?.pid || null,
+        target: GATEWAY_TARGET,
+        token: OPENCLAW_GATEWAY_TOKEN // Gateway token for WebSocket connections
+      },
+      stateDir: STATE_DIR,
+      workspaceDir: WORKSPACE_DIR
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
+// POST /api/configure - Idempotent gateway configuration
+app.post("/api/configure", requireApiKey, async (req, res) => {
+  req.setTimeout(600_000); // 10 minutes
+  res.setTimeout(600_000);
+  
+  try {
+    if (isConfigured()) {
+      // Already configured, just ensure gateway is running
+      await ensureGatewayRunning();
+      return res.json({
+        ok: true,
+        output: "Already configured. Gateway is running.\nUse POST /api/reset to reconfigure.\n",
+        alreadyConfigured: true
+      });
+    }
+
+    fs.mkdirSync(STATE_DIR, { recursive: true });
+    fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
+
+    const payload = req.body || {};
+    
+    // Transform provider/apiKey to authChoice/authSecret for convenience
+    if (payload.provider && !payload.authChoice) {
+      const providerMap = {
+        "openai": "openai-api-key",
+        "anthropic": "apiKey",
+        "google": "gemini-api-key",
+        "gemini": "gemini-api-key",
+        "openrouter": "openrouter-api-key",
+      };
+      payload.authChoice = providerMap[payload.provider.toLowerCase()];
+    }
+    if (payload.apiKey && !payload.authSecret) {
+      payload.authSecret = payload.apiKey;
+    }
+    
+    const validationError = validatePayload(payload);
+    if (validationError) {
+      return res.status(400).json({ ok: false, output: validationError });
+    }
+
+    const onboardArgs = buildOnboardArgs(payload);
+    const onboard = await runCmd(OPENCLAW_CLI, onboardArgs);
+
+    let extra = "";
+    extra += `\n[api/configure] Onboarding exit=${onboard.code} configured=${isConfigured()}\n`;
+
+    const ok = onboard.code === 0 && isConfigured();
+
+    if (ok) {
+      extra += "\n[api/configure] Configuring gateway settings...\n";
+
+      // Set gateway token in config
+      const tokenResult = await runCmd(
+        OPENCLAW_CLI,
+        ["config", "set", "gateway.auth.token", OPENCLAW_GATEWAY_TOKEN],
+      );
+      extra += `[config] gateway.auth.token exit=${tokenResult.code}\n`;
+
+      // Set allowInsecureAuth
+      const allowInsecureResult = await runCmd(
+        OPENCLAW_CLI,
+        ["config", "set", "gateway.controlUi.allowInsecureAuth", "true"],
+      );
+      extra += `[config] gateway.controlUi.allowInsecureAuth=true exit=${allowInsecureResult.code}\n`;
+
+      // Set trusted proxies
+      const proxiesResult = await runCmd(
+        OPENCLAW_CLI,
+        ["config", "set", "--json", "gateway.trustedProxies", '["127.0.0.1"]'],
+      );
+      extra += `[config] gateway.trustedProxies exit=${proxiesResult.code}\n`;
+
+      // Configure allowed origins
+      const allowedOrigins = ["http://localhost:8080", "http://127.0.0.1:8080"];
+      if (process.env.RAILWAY_PUBLIC_DOMAIN) {
+        allowedOrigins.push(`https://${process.env.RAILWAY_PUBLIC_DOMAIN}`);
+      }
+      if (process.env.RAILWAY_STATIC_URL) {
+        allowedOrigins.push(process.env.RAILWAY_STATIC_URL);
+      }
+      allowedOrigins.push("https://*.railway.app");
+      
+      const originsResult = await runCmd(
+        OPENCLAW_CLI,
+        ["config", "set", "--json", "gateway.controlUi.allowedOrigins", JSON.stringify(allowedOrigins)],
+      );
+      extra += `[config] gateway.controlUi.allowedOrigins exit=${originsResult.code}\n`;
+
+      // Set model if provided
+      if (payload.model?.trim()) {
+        // Determine provider prefix based on authChoice
+        let providerPrefix = '';
+        if (payload.authChoice === 'openai-api-key') {
+          providerPrefix = 'openai/';
+        } else if (payload.authChoice === 'apiKey') {
+          providerPrefix = 'anthropic/';
+        } else if (payload.authChoice === 'gemini-api-key') {
+          providerPrefix = 'google/';
+        } else if (payload.authChoice === 'openrouter-api-key') {
+          providerPrefix = 'openrouter/';
+        }
+        
+        const modelName = payload.model.trim();
+        // Only add prefix if model doesn't already have one
+        const fullModelName = modelName.includes('/') ? modelName : `${providerPrefix}${modelName}`;
+        
+        extra += `[api/configure] Setting model to ${fullModelName}...\n`;
+        const modelResult = await runCmd(
+          OPENCLAW_CLI,
+          ["models", "set", fullModelName],
+        );
+        extra += `[models set] exit=${modelResult.code}\n${modelResult.output || ""}\n`;
+      }
+
+      // Configure channels if tokens provided
+      async function configureChannel(name, cfgObj) {
+        const set = await runCmd(
+          OPENCLAW_CLI,
+          ["config", "set", "--json", `channels.${name}`, JSON.stringify(cfgObj)],
+        );
+        return `\n[${name} config] exit=${set.code}\n${set.output || "(no output)"}\n`;
+      }
+
+      if (payload.telegramToken?.trim()) {
+        extra += await configureChannel("telegram", {
+          enabled: true,
+          dmPolicy: "pairing",
+          botToken: payload.telegramToken.trim(),
+          groupPolicy: "allowlist",
+          streamMode: "partial",
+        });
+      }
+
+      if (payload.discordToken?.trim()) {
+        extra += await configureChannel("discord", {
+          enabled: true,
+          token: payload.discordToken.trim(),
+          groupPolicy: "allowlist",
+          dm: { policy: "pairing" },
+        });
+      }
+
+      extra += "\n[api/configure] Starting gateway...\n";
+      await restartGateway();
+      extra += "[api/configure] Gateway started.\n";
+    }
+
+    return res.status(ok ? 200 : 500).json({
+      ok,
+      output: `${onboard.output}${extra}`,
+    });
+  } catch (err) {
+    console.error("[/api/configure] error:", err);
+    return res.status(500).json({ ok: false, output: `Internal error: ${String(err)}` });
+  }
+});
+
+// GET /api/logs - Get recent gateway logs
+app.get("/api/logs", requireApiKey, async (req, res) => {
+  const tail = parseInt(req.query.tail || '100', 10);
+  const logPath = '/tmp/openclaw/openclaw-' + new Date().toISOString().split('T')[0] + '.log';
+  
+  try {
+    const logResult = await runCmd('tail', ['-n', String(tail), logPath]);
+    const logs = logResult.output || 'No logs found';
+    
+    // Parse for important status
+    const hasTelegram = logs.includes('[telegram]');
+    const hasDiscord = logs.includes('[discord]');
+    const hasErrors = logs.toLowerCase().includes('error') || logs.toLowerCase().includes('failed');
+    
+    res.json({
+      ok: true,
+      logs: logs,
+      logPath,
+      status: {
+        hasTelegram,
+        hasDiscord,
+        hasErrors,
+      }
+    });
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: String(err),
+      logPath,
+    });
+  }
+});
+
+// POST /api/doctor - Run diagnostics and repairs
+app.post("/api/doctor", requireApiKey, async (req, res) => {
+  req.setTimeout(300_000); // 5 minutes
+  res.setTimeout(300_000);
+  
+  const args = ["doctor", "--non-interactive", "--repair"];
+  const result = await runCmd(OPENCLAW_CLI, args);
+  return res.status(result.code === 0 ? 200 : 500).json({
+    ok: result.code === 0,
+    output: result.output,
+    exitCode: result.code
+  });
+});
+
+// POST /api/reset - Delete configuration and stop gateway
+app.post("/api/reset", requireApiKey, async (req, res) => {
+  try {
+    // Stop gateway first
+    if (gatewayProc) {
+      gatewayProc.kill("SIGTERM");
+      await sleep(1000);
+      if (gatewayProc && !gatewayProc.killed) {
+        gatewayProc.kill("SIGKILL");
+      }
+      gatewayProc = null;
+    }
+    
+    // Delete config
+    fs.rmSync(configPath(), { force: true });
+    
+    res.json({
+      ok: true,
+      message: "Configuration deleted. Gateway stopped. Use POST /api/configure to set up again."
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
+// GET /api/pairing - List pending pairing requests
+app.get("/api/pairing", requireApiKey, async (req, res) => {
+  req.setTimeout(60_000);
+  res.setTimeout(60_000);
+  
+  const { channel } = req.query || {};
+  
+  // If channel is specified, list for that channel only
+  if (channel) {
+    const args = ["pairing", "list", "--channel", String(channel)];
+    const r = await runCmd(OPENCLAW_CLI, args);
+    
+    // Parse output into structured format
+    const pending = [];
+    if (r.code === 0 && r.output) {
+      const lines = r.output.split('\n').filter(line => line.trim());
+      for (const line of lines) {
+        // Skip "No pending" messages
+        if (line.toLowerCase().includes('no pending')) continue;
+        
+        // Match actual pairing codes (alphanumeric, not "pending" or "No")
+        const match = line.match(/^([a-zA-Z0-9]{4,})\s+(telegram|discord)/i);
+        if (match && match[1].toLowerCase() !== 'pending' && match[1].toLowerCase() !== 'no') {
+          pending.push({
+            code: match[1],
+            channel: match[2].toLowerCase(),
+            info: line.trim()
+          });
+        }
+      }
+    }
+    
+    return res.status(r.code === 0 ? 200 : 500).json({ 
+      ok: r.code === 0, 
+      output: r.output,
+      pending,
+      count: pending.length
+    });
+  }
+  
+  // No channel specified - try both telegram and discord
+  const pending = [];
+  const channels = ['telegram', 'discord'];
+  const outputs = [];
+  
+  for (const ch of channels) {
+    const args = ["pairing", "list", "--channel", ch];
+    const r = await runCmd(OPENCLAW_CLI, args);
+    
+    if (r.code === 0 && r.output) {
+      outputs.push(r.output);
+      const lines = r.output.split('\n').filter(line => line.trim());
+      for (const line of lines) {
+        // Skip "No pending" messages
+        if (line.toLowerCase().includes('no pending')) continue;
+        
+        // Match actual pairing codes (alphanumeric, not "pending" or "No")
+        const match = line.match(/^([a-zA-Z0-9]{4,})\s+(telegram|discord)/i);
+        if (match && match[1].toLowerCase() !== 'pending' && match[1].toLowerCase() !== 'no') {
+          pending.push({
+            code: match[1],
+            channel: match[2].toLowerCase(),
+            info: line.trim()
+          });
+        }
+      }
+    }
+  }
+  
+  return res.json({ 
+    ok: true, 
+    output: outputs.join('\n'),
+    pending,
+    count: pending.length
+  });
+});
+
+// POST /api/pairing/approve - Approve a pairing request
+app.post("/api/pairing/approve", requireApiKey, async (req, res) => {
+  req.setTimeout(120_000); // 2 minutes
+  res.setTimeout(120_000);
+  
+  const { channel, code } = req.body || {};
+  if (!channel || !code) {
+    return res.status(400).json({ ok: false, error: "Missing channel or code" });
+  }
+  
+  const r = await runCmd(
+    OPENCLAW_CLI,
+    ["pairing", "approve", String(channel), String(code)],
+  );
+  
+  // Check if pairing succeeded
+  const output = r.output || '';
+  const successIndicators = ['approved', 'success', 'granted', 'paired', 'authorized'];
+  const errorIndicators = ['no pending', 'not found', 'invalid', 'expired', 'failed'];
+  
+  const hasSuccess = successIndicators.some(word => output.toLowerCase().includes(word));
+  const hasError = errorIndicators.some(word => output.toLowerCase().includes(word));
+  const isSuccess = r.code === 0 || (hasSuccess && !hasError);
+  
+  return res.status(isSuccess ? 200 : 500).json({ 
+    ok: isSuccess, 
+    output: output,
+    exitCode: r.code
+  });
+});
+
+// Device management API (backward compatible, now secured)
+app.get("/api/devices", requireApiKey, async (_req, res) => {
   try {
     const result = await runCmd(OPENCLAW_CLI, ["devices", "list"]);
     const devices = [];
@@ -1001,7 +1446,7 @@ app.get("/api/devices", async (_req, res) => {
   }
 });
 
-app.post("/api/devices/approve", async (req, res) => {
+app.post("/api/devices/approve", requireApiKey, async (req, res) => {
   try {
     const { requestId } = req.body;
     if (!requestId) {
@@ -1016,6 +1461,625 @@ app.post("/api/devices/approve", async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ===== SKILL MANAGEMENT API ROUTES =====
+
+// GET /api/skills - List installed skills
+app.get("/api/skills", requireApiKey, async (_req, res) => {
+  try {
+    const CLAWHUB_CLI = process.env.CLAWHUB_CLI?.trim() || "clawhub";
+    const result = await runCmd(CLAWHUB_CLI, ["list", "--workdir", WORKSPACE_DIR]);
+    
+    // Parse the output - format is typically slug@version or JSON
+    const skills = [];
+    const lines = result.output.trim().split('\n');
+    
+    for (const line of lines) {
+      if (!line.trim() || line.startsWith('#')) continue;
+      
+      // Skip common "no skills" messages
+      if (line.toLowerCase().includes('no installed skills') || 
+          line.toLowerCase().includes('no skills found')) {
+        continue;
+      }
+      
+      // Parse format: skill-slug@1.0.0 or similar
+      // Must have @ symbol to be a valid skill entry
+      const match = line.match(/^([a-z0-9\-]+)@([0-9.]+)/i);
+      if (match) {
+        skills.push({
+          slug: match[1],
+          version: match[2],
+          raw: line.trim()
+        });
+      }
+    }
+    
+    res.json({
+      ok: true,
+      skills,
+      count: skills.length,
+      workspaceDir: WORKSPACE_DIR,
+      skillsDir: path.join(WORKSPACE_DIR, 'skills')
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message, 
+      skills: [] 
+    });
+  }
+});
+
+// GET /api/skills/search - Search ClawHub for skills
+app.get("/api/skills/search", requireApiKey, async (req, res) => {
+  try {
+    const { q, limit } = req.query;
+    if (!q) {
+      return res.status(400).json({ ok: false, error: 'Missing query parameter: q' });
+    }
+    
+    const query = String(q).trim();
+    const maxResults = limit ? Math.min(parseInt(limit, 10), 100) : 20;
+    const cacheKey = `${query}:${maxResults}`;
+    
+    // Check cache first to avoid rate limits
+    const cached = clawhubCache.get('search', cacheKey);
+    if (cached) {
+      return res.json({
+        ok: true,
+        query,
+        results: cached,
+        count: cached.length,
+        cached: true
+      });
+    }
+    
+    // Use ClawHub API directly
+    const clawhubApiUrl = `https://clawhub.ai/api/v1/search?q=${encodeURIComponent(query)}&limit=${maxResults}`;
+    
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000); // 10s timeout
+      
+      const response = await fetch(clawhubApiUrl, {
+        signal: controller.signal,
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': 'openclaw-agent-wrapper/1.0'
+        }
+      });
+      
+      clearTimeout(timeout);
+      
+      if (!response.ok) {
+        throw new Error(`ClawHub API returned ${response.status}: ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      
+      // Parse response - format may vary
+      let results = [];
+      if (Array.isArray(data)) {
+        results = data.map(item => ({
+          slug: item.package || item.slug || item.id || item.name,
+          name: item.name || item.title || (item.package || item.slug || item.id),
+          description: item.description || item.summary || '',
+          author: item.author || item.creator || item.owner,
+          version: item.version || item.latest_version || item.latestVersion,
+          tags: item.tags || [],
+          package: item.package || item.slug,
+          score: item.score || item.relevance
+        }));
+      } else if (data.results && Array.isArray(data.results)) {
+        results = data.results.map(item => ({
+          slug: item.package || item.slug || item.id || item.name,
+          name: item.name || item.title || (item.package || item.slug || item.id),
+          description: item.description || item.summary || '',
+          author: item.author || item.creator || item.owner,
+          version: item.version || item.latest_version || item.latestVersion,
+          tags: item.tags || [],
+          package: item.package || item.slug,
+          score: item.score || item.relevance
+        }));
+      } else if (data.skills && Array.isArray(data.skills)) {
+        results = data.skills.map(item => ({
+          slug: item.package || item.slug || item.id || item.name,
+          name: item.name || item.title || (item.package || item.slug || item.id),
+          description: item.description || item.summary || '',
+          author: item.author || item.creator || item.owner,
+          version: item.version || item.latest_version || item.latestVersion,
+          tags: item.tags || [],
+          package: item.package || item.slug,
+          score: item.score || item.relevance
+        }));
+      }
+      
+      // Log raw data for debugging (first result only)
+      if (results.length > 0 && data.results?.[0]) {
+        console.log('[skills/search] Sample raw item:', JSON.stringify(data.results[0], null, 2));
+      }
+      
+      // Cache the results
+      clawhubCache.set('search', cacheKey, results);
+      
+      res.json({
+        ok: true,
+        query,
+        results,
+        count: results.length
+      });
+    } catch (fetchError) {
+      if (fetchError.name === 'AbortError') {
+        return res.status(504).json({
+          ok: false,
+          error: 'ClawHub API timeout',
+          results: []
+        });
+      }
+      
+      console.error('[skills/search] ClawHub API error:', fetchError);
+      
+      // Fallback to CLI if API fails
+      const CLAWHUB_CLI = process.env.CLAWHUB_CLI?.trim() || "clawhub";
+      const args = ["search", query, "--no-input"];
+      if (limit) {
+        args.push("--limit", String(maxResults));
+      }
+      
+      const result = await runCmd(CLAWHUB_CLI, args);
+      
+      if (result.code !== 0) {
+        return res.status(500).json({
+          ok: false,
+          error: `ClawHub search failed: ${fetchError.message}`,
+          results: []
+        });
+      }
+      
+      // Parse CLI output
+      const results = [];
+      const lines = result.output.trim().split('\n');
+      
+      for (const line of lines) {
+        if (!line.trim() || line.startsWith('Searching') || line.startsWith('Found')) continue;
+        
+        const match = line.match(/^([a-z0-9\-]+)\s*-\s*(.+)$/i);
+        if (match) {
+          results.push({
+            slug: match[1],
+            description: match[2].trim()
+          });
+        } else if (line.match(/^[a-z0-9\-]+$/i)) {
+          results.push({
+            slug: line.trim(),
+            description: ''
+          });
+        }
+      }
+      
+      // Cache CLI results too
+      clawhubCache.set('search', cacheKey, results);
+      
+      res.json({
+        ok: true,
+        query,
+        results,
+        count: results.length,
+        source: 'cli'
+      });
+    }
+  } catch (error) {
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message, 
+      results: [] 
+    });
+  }
+});
+
+// POST /api/skills/install - Install a skill
+app.post("/api/skills/install", requireApiKey, async (req, res) => {
+  try {
+    const { slug, version, force, retry } = req.body || {};
+    
+    if (!slug) {
+      return res.status(400).json({ ok: false, error: 'Missing required field: slug' });
+    }
+    
+    const CLAWHUB_CLI = process.env.CLAWHUB_CLI?.trim() || "clawhub";
+    const args = ["install", String(slug), "--workdir", WORKSPACE_DIR, "--no-input"];
+    
+    if (version) {
+      args.push("--version", String(version));
+    }
+    if (force) {
+      args.push("--force");
+    }
+    
+    // Retry logic for rate limit errors
+    const maxRetries = retry === true ? 3 : (typeof retry === 'number' ? retry : 0);
+    let lastError = null;
+    
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      if (attempt > 0) {
+        // Exponential backoff: 2s, 4s, 8s
+        const delay = Math.pow(2, attempt) * 1000;
+        console.log(`[api/skills/install] Rate limited, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries + 1})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+      
+      const result = await runCmd(CLAWHUB_CLI, args);
+      const output = result.output || '';
+      const isRateLimit = output.toLowerCase().includes('rate limit');
+      const success = result.code === 0 || output.toLowerCase().includes('installed');
+      
+      if (success) {
+        return res.json({
+          ok: true,
+          slug,
+          version: version || 'latest',
+          output: result.output,
+          exitCode: result.code,
+          attempts: attempt + 1
+        });
+      }
+      
+      lastError = result;
+      
+      // If not rate limit error, don't retry
+      if (!isRateLimit) {
+        break;
+      }
+    }
+    
+    // All retries failed or non-rate-limit error
+    const isRateLimit = (lastError.output || '').toLowerCase().includes('rate limit');
+    
+    res.status(isRateLimit ? 429 : 500).json({
+      ok: false,
+      slug,
+      version: version || 'latest',
+      output: lastError.output,
+      exitCode: lastError.code,
+      error: isRateLimit ? 'Rate limit exceeded' : 'Installation failed',
+      suggestion: isRateLimit ? 'Wait 1-2 minutes and retry, or use {"retry": true} in request body for automatic retries' : undefined
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message 
+    });
+  }
+});
+
+// POST /api/skills/update - Update skill(s)
+app.post("/api/skills/update", requireApiKey, async (req, res) => {
+  try {
+    const { slug, all, version, force } = req.body || {};
+    
+    if (!slug && !all) {
+      return res.status(400).json({ 
+        ok: false, 
+        error: 'Must specify either slug or all=true' 
+      });
+    }
+    
+    const CLAWHUB_CLI = process.env.CLAWHUB_CLI?.trim() || "clawhub";
+    const args = ["update", "--workdir", WORKSPACE_DIR, "--no-input"];
+    
+    if (all) {
+      args.push("--all");
+    } else {
+      args.push(String(slug));
+      if (version) {
+        args.push("--version", String(version));
+      }
+    }
+    
+    if (force) {
+      args.push("--force");
+    }
+    
+    const result = await runCmd(CLAWHUB_CLI, args);
+    const success = result.code === 0 || result.output.toLowerCase().includes('updated');
+    
+    res.json({
+      ok: success,
+      slug: slug || 'all',
+      output: result.output,
+      exitCode: result.code
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message 
+    });
+  }
+});
+
+// DELETE /api/skills/:slug - Delete a skill
+app.delete("/api/skills/:slug", requireApiKey, async (req, res) => {
+  try {
+    const { slug } = req.params;
+    
+    if (!slug) {
+      return res.status(400).json({ ok: false, error: 'Missing skill slug' });
+    }
+    
+    // Remove the skill directory
+    const skillPath = path.join(WORKSPACE_DIR, 'skills', slug);
+    
+    if (!fs.existsSync(skillPath)) {
+      return res.status(404).json({ 
+        ok: false, 
+        error: `Skill not found: ${slug}`,
+        path: skillPath
+      });
+    }
+    
+    fs.rmSync(skillPath, { recursive: true, force: true });
+    
+    res.json({
+      ok: true,
+      slug,
+      message: `Skill ${slug} deleted`,
+      path: skillPath
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message 
+    });
+  }
+});
+
+// ===== CHAT/MESSAGING API ROUTE =====
+
+// Singleton gateway client instance (reuses WebSocket connection)
+let gatewayClient = null;
+
+function getGatewayClient() {
+  if (!gatewayClient) {
+    const gatewayUrl = `ws://${INTERNAL_GATEWAY_HOST}:${INTERNAL_GATEWAY_PORT}/gateway?token=${OPENCLAW_GATEWAY_TOKEN}`;
+    gatewayClient = new OpenClawGatewayClient({
+      gatewayUrl,
+      token: OPENCLAW_GATEWAY_TOKEN
+    });
+  }
+  return gatewayClient;
+}
+
+// POST /api/chat - Send message to agent and get response
+app.post("/api/chat", requireApiKey, async (req, res) => {
+  try {
+    const { message, agentId = "main", sessionKey } = req.body || {};
+    
+    if (!message) {
+      return res.status(400).json({ 
+        ok: false, 
+        error: 'Missing required field: message' 
+      });
+    }
+    
+    // Ensure gateway is running
+    if (!isGatewayReady()) {
+      await ensureGatewayRunning();
+      if (!isGatewayReady()) {
+        return res.status(503).json({
+          ok: false,
+          error: 'Gateway not ready'
+        });
+      }
+    }
+    
+    // Set request timeout
+    req.setTimeout(120000); // 2 minutes
+    res.setTimeout(120000);
+    
+    try {
+      const client = getGatewayClient();
+      
+      // Generate session key if not provided (per-user sessions)
+      const finalSessionKey = sessionKey || `api-session-${Date.now()}`;
+      
+      const response = await client.sendChat({
+        agentId,
+        sessionKey: finalSessionKey,
+        text: message
+      });
+      
+      res.json({
+        ok: true,
+        agentId,
+        sessionKey: finalSessionKey,
+        response,
+        timestamp: new Date().toISOString()
+      });
+    } catch (chatError) {
+      // If connection failed, reset client and try once more
+      if (chatError.message.includes('timeout') || chatError.message.includes('closed')) {
+        gatewayClient = null; // Reset for next request
+        return res.status(504).json({
+          ok: false,
+          error: 'Gateway timeout or connection closed',
+          message: chatError.message
+        });
+      }
+      throw chatError;
+    }
+  } catch (error) {
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message 
+    });
+  }
+});
+
+// ===== OpenClaw CLI INFO ENDPOINTS =====
+
+// GET /api/channels - Get channels status (Telegram, Discord, etc.)
+app.get("/api/channels", requireApiKey, async (_req, res) => {
+  try {
+    const result = await runCmd(OPENCLAW_CLI, ["channels", "status"]);
+    
+    // Parse output to extract channel info
+    const lines = result.output.trim().split('\n');
+    const channels = [];
+    
+    for (const line of lines) {
+      // Parse lines like: "telegram: connected (@botname)"
+      // or "discord: disconnected"
+      const match = line.match(/^(\w+):\s+(\w+)(?:\s+\(([^)]+)\))?/);
+      if (match) {
+        channels.push({
+          type: match[1],
+          status: match[2],
+          info: match[3] || null
+        });
+      }
+    }
+    
+    res.json({
+      ok: true,
+      output: result.output,
+      channels,
+      exitCode: result.code
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message 
+    });
+  }
+});
+
+// GET /api/models - List available models
+app.get("/api/models", requireApiKey, async (_req, res) => {
+  try {
+    const result = await runCmd(OPENCLAW_CLI, ["models", "list"]);
+    
+    // Parse output to extract model info
+    const lines = result.output.trim().split('\n');
+    const models = [];
+    
+    for (const line of lines) {
+      // Parse lines with model information
+      // Format may vary, so we'll capture the raw line and try to extract fields
+      const trimmed = line.trim();
+      if (trimmed && !trimmed.startsWith('#') && !trimmed.startsWith('=')) {
+        // Try to parse format like: "provider/model-name (context-window)"
+        const match = trimmed.match(/^([^\/]+)\/([^\s]+)(?:\s+\(([^)]+)\))?/);
+        if (match) {
+          models.push({
+            provider: match[1],
+            name: match[2],
+            details: match[3] || null,
+            raw: trimmed
+          });
+        } else {
+          // Fallback: just store the raw line
+          models.push({
+            raw: trimmed
+          });
+        }
+      }
+    }
+    
+    res.json({
+      ok: true,
+      output: result.output,
+      models,
+      exitCode: result.code
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message 
+    });
+  }
+});
+
+// GET /api/config - Get OpenClaw configuration
+app.get("/api/config", requireApiKey, async (req, res) => {
+  try {
+    // Get specific config path or all config
+    const configPath = req.query.path;
+    
+    if (!configPath) {
+      // Path is required by this version of OpenClaw CLI
+      return res.status(400).json({ 
+        ok: false, 
+        error: "Missing required query parameter: path",
+        hint: "Use /api/config?path=gateway.port or similar"
+      });
+    }
+    
+    // Call: openclaw config get <path>
+    const result = await runCmd(OPENCLAW_CLI, ["config", "get", configPath]);
+    
+    // Try to parse as JSON if possible
+    let config = null;
+    try {
+      config = JSON.parse(result.output);
+    } catch {
+      // Return the raw value for specific paths
+      config = result.output.trim();
+    }
+    
+    res.json({
+      ok: result.code === 0,
+      output: result.output,
+      config,
+      path: configPath,
+      exitCode: result.code
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message 
+    });
+  }
+});
+
+// GET /api/sessions - List active sessions
+app.get("/api/sessions", requireApiKey, async (_req, res) => {
+  try {
+    const result = await runCmd(OPENCLAW_CLI, ["sessions"]);
+    
+    // Parse output to extract session info
+    const lines = result.output.trim().split('\n');
+    const sessions = [];
+    
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed && !trimmed.startsWith('#') && !trimmed.startsWith('=') && !trimmed.startsWith('error:')) {
+        // Try to parse session information
+        // Format may vary, store what we can extract
+        const parts = trimmed.split(/\s+/);
+        if (parts.length > 0) {
+          sessions.push({
+            id: parts[0],
+            raw: trimmed
+          });
+        }
+      }
+    }
+    
+    res.json({
+      ok: true,
+      output: result.output,
+      sessions,
+      count: sessions.length,
+      exitCode: result.code
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message 
+    });
   }
 });
 
