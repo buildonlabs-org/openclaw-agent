@@ -139,29 +139,31 @@ export class OpenClawGatewayClient {
     // 3) Chat streaming events
     if (msg.type === "event" && msg.event === "chat") {
       const p = msg.payload || {};
+      
       const pending = this.pending.get(this.lastChatReqId);
       if (!pending) return;
 
-      // Try common shapes
-      if (p.delta?.text) {
-        pending.chunks.push(p.delta.text);
-        return;
-      }
-
+      // Extract text from message.content array
       if (p.message?.content) {
         const text = (p.message.content || [])
           .filter(c => c.type === "text")
           .map(c => c.text)
           .join("");
-        if (text) pending.chunks.push(text);
-        return;
-      }
-
-      if (p.kind === "done" || p.done === true || p.type === "done") {
-        pending.resolve(pending.chunks.join(""));
-        this.pending.delete(this.lastChatReqId);
-        this.lastChatReqId = null;
-        return;
+        
+        // For delta state, accumulate chunks
+        if (p.state === "delta" && text) {
+          pending.chunks.push(text);
+          return;
+        }
+        
+        // For final state, resolve with the complete message
+        if (p.state === "final") {
+          // Use final text directly (it contains the full response)
+          pending.resolve(text || pending.chunks.join(""));
+          this.pending.delete(this.lastChatReqId);
+          this.lastChatReqId = null;
+          return;
+        }
       }
       return;
     }
@@ -216,21 +218,20 @@ export class OpenClawGatewayClient {
       }, 60_000);
     });
 
-    // Use the session key format your gateway expects
+    // Encode agent into the sessionKey (since chat.send doesn't accept agentId)
     const sk = sessionKey || `agent:${agentId}:main`;
+
+    // REQUIRED for side-effecting methods like chat.send
+    const idempotencyKey = crypto.randomUUID();
 
     this._send({
       type: "req",
       id: reqId,
       method: "chat.send",
       params: {
-        agentId,
         sessionKey: sk,
-        message: {
-          role: "user",
-          content: [{ type: "text", text }]
-        },
-        stream: true
+        message: text,               // MUST be a string
+        idempotencyKey,              // REQUIRED
       },
     });
 
