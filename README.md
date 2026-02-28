@@ -1,14 +1,18 @@
 # OpenClaw Gateway - Railway Deployment
 
-Deploy an OpenClaw AI gateway to Railway with a **web-based setup wizard** — no command-line configuration needed!
+Deploy an OpenClaw AI gateway to Railway with a **web-based setup wizard** or **headless API** — configure via browser or programmatically!
 
 ## ✨ Features
 
 - 🧙 **Web Setup Wizard** at `/setup` - Configure through your browser
+- 🔌 **Headless REST API** at `/api/*` - Full programmatic control ([docs](API.md))
 - 🤖 **Multi-Provider Support** - OpenAI, Anthropic, Google Gemini, OpenRouter
 - ⚙️ **Auto-Configuration** - Gateway settings applied automatically
 - 💬 **Channel Integration** - Connect Telegram, Discord bots
-- 🔐 **Device Management** - Approve pairing requests via web UI
+- 🔐 **Device Management** - Approve pairing requests via web UI or API
+- 🎯 **Skill Management** - Install, update, and manage ClawHub skills via API
+- 💬 **Chat API** - Send messages to your agent and receive responses
+- 🚀 **Auto-Install Skills** - Pre-install skills on first launch via environment variable
 - 💾 **Persistent State** - Configuration survives redeploys
 - 🔄 **Backward Compatible** - Works with existing launcher apps
 
@@ -21,24 +25,43 @@ Deploy an OpenClaw AI gateway to Railway with a **web-based setup wizard** — n
    - Connect to Railway
    - Railway auto-detects Dockerfile and deploys
 
-2. **Set Required Environment Variable:**
+2. **Set Required Environment Variables:**
    ```
    SETUP_PASSWORD=your-secure-password-here
+   WRAPPER_API_KEY=your-api-key-for-headless-access
    ```
-   This password protects access to the `/setup` wizard.
+   - `SETUP_PASSWORD`: Protects access to the `/setup` wizard
+   - `WRAPPER_API_KEY`: Bearer token for programmatic API access (optional, defaults to gateway token)
 
-3. **Configure via Web Wizard:**
+3. **Configure via Web Wizard OR API:**
+
+   **Option A: Web Wizard**
    - Visit `https://your-app.railway.app/setup`
-   - Enter your `SETUP_PASSWORD` when prompted (Basic Auth)
+   - Enter your `SETUP_PASSWORD` when prompted
    - Follow the 3-step wizard:
      - **Step 1**: Choose AI provider and enter API key
      - **Step 2**: Connect Telegram/Discord (optional)
      - **Step 3**: Review and run setup
    - Gateway starts automatically!
 
+   **Option B: Headless API** (for custom frontends)
+   ```bash
+   curl -X POST https://your-app.railway.app/api/configure \
+     -H "Authorization: Bearer YOUR_WRAPPER_API_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "flow": "quickstart",
+       "authChoice": "openai-api-key",
+       "authSecret": "sk-...",
+       "model": "gpt-4"
+     }'
+   ```
+   See [API.md](API.md) for complete documentation.
+
 4. **Access Your Gateway:**
    - `/openclaw` - OpenClaw Control UI
    - `/setup` - Configuration wizard (password protected)
+   - `/api/*` - Headless REST API (bearer token protected)
    - `/api/devices` - Device management API (for launcher apps)
 
 ### Local Testing
@@ -69,13 +92,24 @@ Visit http://localhost:8080/setup (password: `test123`) to configure.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
+| `WRAPPER_API_KEY` | Bearer token for headless API access | (uses gateway token) |
 | `PORT` | HTTP port (Railway sets this automatically) | `8080` |
 | `INTERNAL_GATEWAY_PORT` | Gateway port (internal only) | `18789` |
 | `OPENCLAW_WORKSPACE_DIR` | Workspace directory | `/data/workspace` |
 | `OPENCLAW_STATE_DIR` | State/config directory | `/data/.openclaw` |
 | `OPENCLAW_GATEWAY_TOKEN` | Gateway auth token (auto-generated if not set) | - |
+| `OPENCLAW_DEFAULT_SKILLS` | Comma-separated skill slugs to auto-install | - |
+| `CLAWHUB_CLI` | Path to clawhub CLI binary | `clawhub` |
 
-**Note:** AI provider API keys are configured through the `/setup` wizard, not environment variables.
+**Skill Management:**
+- Set `OPENCLAW_DEFAULT_SKILLS` to pre-install skills on first launch:
+  ```bash
+  OPENCLAW_DEFAULT_SKILLS=postgres-backup,calendar-sync,gmail-integration
+  ```
+- Skills are installed from [ClawHub](https://clawhub.ai) registry
+- Manage skills via `/api/skills` endpoints (see [API.md](API.md))
+
+**Note:** AI provider API keys are configured through the `/setup` wizard or `/api/configure` endpoint, not environment variables.
 
 ## 🧙 Setup Wizard
 
@@ -127,7 +161,56 @@ Once configured, the setup wizard provides administrative tools:
   - Useful for changing providers or fixing broken config
   - Deletes `/data/.openclaw/openclaw.json`
 
-## 🔧 Configuration Details
+## � Headless API
+
+The wrapper exposes a comprehensive REST API for programmatic control. See [API.md](API.md) for complete documentation.
+
+### Quick Examples
+
+**Skill Management:**
+```bash
+# List installed skills
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+  https://your-agent.railway.app/api/skills
+
+# Search ClawHub for skills
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+  "https://your-agent.railway.app/api/skills/search?q=postgres"
+
+# Install a skill
+curl -X POST -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"slug": "postgres-backup"}' \
+  https://your-agent.railway.app/api/skills/install
+```
+
+**Chat with Agent:**
+```bash
+# Send a message
+curl -X POST -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "What is the weather?", "userId": "user-123"}' \
+  https://your-agent.railway.app/api/chat
+```
+
+**Configuration & Status:**
+```bash
+# Get agent status
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+  https://your-agent.railway.app/api/status
+
+# View logs
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+  https://your-agent.railway.app/api/logs?tail=100
+
+# Run diagnostics
+curl -X POST -H "Authorization: Bearer YOUR_API_KEY" \
+  https://your-agent.railway.app/api/doctor
+```
+
+See [API.md](API.md) for all available endpoints and detailed examples.
+
+## �🔧 Configuration Details
 
 The wrapper server (`src/server.js`) manages all gateway configuration:
 
@@ -185,20 +268,36 @@ All routes except `/setup` and `/api/*` are proxied to the OpenClaw gateway:
 - `POST /setup/api/pairing/approve` - Approve device pairing
 - `GET /setup/api/debug` - System debug info
 
-### Device Management (Public, for Launcher Apps)
+### Headless REST API (Bearer Token Protected)
 
-- `GET /api/devices` - List pending and approved devices
-- `POST /api/devices/approve` - Approve a device by requestId
+**Complete API for custom frontends and programmatic control.**
+
+- `GET /api/status` - Get agent status and gateway info
+- `POST /api/configure` - Configure agent with provider/model/channels
+- `GET /api/logs?tail=N` - Get recent gateway logs
+- `POST /api/doctor` - Run diagnostics and repairs
+- `POST /api/reset` - Delete configuration and stop gateway
+- `GET /api/pairing` - List pending DM pairing requests
+- `POST /api/pairing/approve` - Approve a pairing request
+- `GET /api/devices` - List pending device pairings
+- `POST /api/devices/approve` - Approve device pairing
+
+**Authentication:** All `/api/*` routes require `Authorization: Bearer <WRAPPER_API_KEY>`
+
+**Complete documentation:** See [API.md](API.md) for detailed specs, request/response schemas, and integration examples.
 
 **Example:**
 ```bash
-# List devices
-curl https://your-app.railway.app/api/devices
+# Get status
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+  https://your-app.railway.app/api/status
 
-# Approve device
-curl -X POST https://your-app.railway.app/api/devices/approve \
+# Configure agent
+curl -X POST \
+  -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"requestId": "abc123def456"}'
+  -d '{"authChoice":"openai-api-key","authSecret":"sk-..."}' \
+  https://your-app.railway.app/api/configure
 ```
 
 ## 🛠️ Troubleshooting

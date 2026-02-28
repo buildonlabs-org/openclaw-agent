@@ -26,6 +26,9 @@ ENV OPENCLAW_SKIP_SETUP=1 \
 # The install itself succeeds, just the post-install setup fails in Docker
 RUN curl -fsSL https://openclaw.ai/install.sh | bash || echo "Install script exit code: $? (expected if tty setup fails)"
 
+# Install ClawHub CLI for skill management
+RUN npm install -g clawhub || pnpm add -g clawhub || echo "ClawHub CLI install failed, will skip skill features"
+
 # Add OpenClaw to PATH
 ENV PATH="/root/.local/bin:/root/.openclaw/bin:${PATH}"
 

@@ -254,6 +254,9 @@
       telegramToken: '',
       discordToken: '',
       model: '',
+      availableModels: [],
+      modelsLoaded: false,
+      showModelDropdown: false,
       log: '',
       loading: false,
       pairingChannel: '',
@@ -281,6 +284,18 @@
         return this.isPairingResultSuccess 
           ? 'User can now send messages to the bot!' 
           : 'The code may have expired or was already used. Have the user send a new message to get a fresh code.';
+      },
+
+      get modelsByProvider() {
+        const grouped = {};
+        for (const model of this.availableModels) {
+          const provider = model.provider || 'Other';
+          if (!grouped[provider]) {
+            grouped[provider] = [];
+          }
+          grouped[provider].push(model);
+        }
+        return grouped;
       },
 
       async init() {
@@ -528,11 +543,29 @@
         }
       },
 
+      async fetchAvailableModels() {
+        try {
+          const res = await this.httpJson('/setup/api/models');
+          if (res.ok && res.models) {
+            this.availableModels = res.models;
+            this.modelsLoaded = true;
+          }
+        } catch (e) {
+          console.error('Failed to fetch models:', e);
+          // Silently fail - user can still enter model manually
+        }
+      },
+
       updateAuthChoices() {
         const group = this.currentGroup;
         this.authChoices = (group && group.options) ? group.options : [];
         if (this.authChoices.length > 0) {
           this.selectedAuth = this.authChoices[0].value;
+        }
+        
+        // Fetch available models when provider is selected
+        if (!this.modelsLoaded) {
+          this.fetchAvailableModels();
         }
         
         // Track provider selection
@@ -1121,14 +1154,61 @@
 
             <div>
               <label class="block text-xs uppercase tracking-wide text-neutral-500 font-medium mb-2">Model (optional)</label>
-              <input 
-                x-model="model" 
-                type="text" 
-                placeholder="e.g. gpt-4o-mini, claude-sonnet-4" 
-                @focus="trackFieldInteraction('model', 'focus')" 
-                @blur="trackFieldInteraction('model', 'blur', model)" 
-                class="w-full bg-neutral-50 dark:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 rounded-lg px-4 py-3 text-sm placeholder-neutral-400 dark:placeholder-neutral-600 focus:outline-none focus:border-red-500 transition-colors" 
-              />
+              
+              <!-- Toggle between dropdown and custom input -->
+              <div class="flex items-center gap-2 mb-2">
+                <button 
+                  @click="showModelDropdown = false" 
+                  :class="!showModelDropdown ? 'bg-red-500 text-white' : 'bg-neutral-200 dark:bg-neutral-700 text-neutral-700 dark:text-neutral-300'"
+                  class="px-3 py-1 rounded text-xs font-medium transition-colors"
+                >
+                  Custom
+                </button>
+                <button 
+                  @click="showModelDropdown = true; if (!modelsLoaded) fetchAvailableModels()" 
+                  :class="showModelDropdown ? 'bg-red-500 text-white' : 'bg-neutral-200 dark:bg-neutral-700 text-neutral-700 dark:text-neutral-300'"
+                  class="px-3 py-1 rounded text-xs font-medium transition-colors"
+                >
+                  Choose from list
+                </button>
+              </div>
+              
+              <!-- Custom model input -->
+              <div x-show="!showModelDropdown">
+                <input 
+                  x-model="model" 
+                  type="text" 
+                  placeholder="e.g. gpt-4o-mini, claude-sonnet-4" 
+                  @focus="trackFieldInteraction('model', 'focus')" 
+                  @blur="trackFieldInteraction('model', 'blur', model)" 
+                  class="w-full bg-neutral-50 dark:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 rounded-lg px-4 py-3 text-sm placeholder-neutral-400 dark:placeholder-neutral-600 focus:outline-none focus:border-red-500 transition-colors" 
+                />
+              </div>
+              
+              <!-- Model dropdown -->
+              <div x-show="showModelDropdown">
+                <select 
+                  x-model="model"
+                  @change="trackFieldInteraction('model', 'selected', model)"
+                  class="w-full bg-white dark:bg-neutral-900 border border-neutral-300 dark:border-neutral-700 rounded-lg px-4 py-3 text-sm focus:outline-none focus:border-red-500 transition-colors"
+                >
+                  <option value="">-- Select a model --</option>
+                  <template x-if="availableModels.length === 0 && !modelsLoaded">
+                    <option disabled>Click to load models...</option>
+                  </template>
+                  <template x-for="(models, provider) in modelsByProvider" :key="provider">
+                    <optgroup :label="provider.toUpperCase()">
+                      <template x-for="m in models" :key="m.fullName || m.raw">
+                        <option 
+                          :value="m.fullName || m.name || m.raw"
+                          x-text="(m.name || m.raw) + (m.details ? ' (' + m.details + ')' : '')"
+                        ></option>
+                      </template>
+                    </optgroup>
+                  </template>
+                </select>
+              </div>
+              
               <p class="text-xs text-neutral-500 dark:text-neutral-600 mt-2">Leave blank to use default model</p>
             </div>
           </div>
