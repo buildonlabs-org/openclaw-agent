@@ -1129,6 +1129,17 @@ app.get("/api/status", requireApiKey, async (_req, res) => {
         gatewayReachable = r !== null;
       } catch {}
       
+      // Proactively initialize WebSocket client if gateway is reachable
+      // This prevents deadlock where frontend waits for fullyReady but client is never created
+      if (gatewayReachable && !gatewayClient) {
+        try {
+          await getGatewayClient();
+        } catch (err) {
+          console.error('[wrapper] status check: failed to initialize gateway client:', err.message);
+          // Continue - websocketReady will remain false
+        }
+      }
+      
       // Check WebSocket connection state
       if (gatewayClient) {
         websocketReady = gatewayClient.ready;
