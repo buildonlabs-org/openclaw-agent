@@ -33,53 +33,36 @@ export class OpenClawGatewayClient {
   }
 
   async connect() {
-    // If we already have a ready connection, return immediately
-    if (this.ready && this.ws && this.ws.readyState === WebSocket.OPEN) {
-      return;
-    }
+    if (this.ready && this.ws && this.ws.readyState === WebSocket.OPEN) return;
 
-    // Close any existing socket (might be stale/closing)
+    // If a prior socket exists, close it
     if (this.ws) {
-      try { 
-        this.ws.close(); 
-        this.ws = null;
-      } catch (err) {
-        console.error('[gateway-client] error closing stale socket:', err.message);
-      }
+      try { this.ws.close(); } catch {}
     }
 
     this.ready = false;
 
-    console.log('[gateway-client] connecting to', this.gatewayUrl.replace(/token=[^&]+/, 'token=***'));
-
     this.ws = new WebSocket(this.gatewayUrl);
 
     this.ws.on("message", (data) => this._onMessage(data));
-    this.ws.on("close", (code, reason) => {
-      console.log('[gateway-client] connection closed:', code, reason.toString());
+    this.ws.on("close", () => {
       this.ready = false;
-      // fail all pending requests
+      // fail all pending
       for (const [id, p] of this.pending.entries()) {
         p.reject(new Error("gateway connection closed"));
         this.pending.delete(id);
       }
     });
-    this.ws.on("error", (err) => {
-      console.error('[gateway-client] socket error:', err.message);
+    this.ws.on("error", () => {
       this.ready = false;
     });
 
-    // Wait until ready (connection confirmed by challenge/response)
+    // Wait until ready
     const start = Date.now();
     while (!this.ready) {
-      if (Date.now() - start > 10_000) {
-        const elapsed = Math.round((Date.now() - start) / 1000);
-        throw new Error(`Gateway WebSocket connection timeout after ${elapsed}s - gateway may still be starting`);
-      }
+      if (Date.now() - start > 10_000) throw new Error("Gateway connect timeout");
       await sleep(50);
     }
-    
-    console.log('[gateway-client] connected and ready');
   }
 
   _send(obj) {
