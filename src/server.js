@@ -2098,11 +2098,18 @@ app.delete("/api/skills/:slug", requireApiKey, async (req, res) => {
 
 // Singleton gateway client instance (reuses WebSocket connection)
 let gatewayClient = null;
+let gatewayConnectPromise = null; // Lock to prevent concurrent connection attempts
 
 async function getGatewayClient() {
   // If client exists and is ready, return it
   if (gatewayClient && gatewayClient.ready) {
     return gatewayClient;
+  }
+  
+  // If a connection attempt is already in progress, wait for it
+  // This prevents race conditions from concurrent /api/status or /api/chat calls
+  if (gatewayConnectPromise) {
+    return gatewayConnectPromise;
   }
   
   // Create new client if none exists
@@ -2114,16 +2121,22 @@ async function getGatewayClient() {
     });
   }
   
-  // Ensure client is connected (this waits for WebSocket handshake)
-  try {
-    await gatewayClient.connect();
-  } catch (err) {
-    console.error('[wrapper] failed to connect gateway client:', err.message);
-    gatewayClient = null; // Reset on failure
-    throw err;
-  }
+  // Lock: store the connection promise so concurrent calls wait
+  gatewayConnectPromise = (async () => {
+    try {
+      await gatewayClient.connect();
+      return gatewayClient;
+    } catch (err) {
+      console.error('[wrapper] failed to connect gateway client:', err.message);
+      gatewayClient = null; // Reset on failure
+      throw err;
+    } finally {
+      // Always release lock when done (success or failure)
+      gatewayConnectPromise = null;
+    }
+  })();
   
-  return gatewayClient;
+  return gatewayConnectPromise;
 }
 
 // POST /api/chat - Send message to agent and get response
