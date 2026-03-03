@@ -15,8 +15,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = Number.parseInt(process.env.PORT ?? "8080", 10);
-const STATE_DIR = process.env.OPENCLAW_STATE_DIR?.trim() || "/data/.openclaw";
-const WORKSPACE_DIR = process.env.OPENCLAW_WORKSPACE_DIR?.trim() || "/data/workspace";
+
+// Auto-detect environment and use appropriate defaults
+const IS_RAILWAY = process.env.RAILWAY_ENVIRONMENT !== undefined;
+const DEFAULT_STATE_DIR = IS_RAILWAY ? "/data/.openclaw" : path.resolve(__dirname, "../.openclaw");
+const DEFAULT_WORKSPACE_DIR = IS_RAILWAY ? "/data/workspace" : path.resolve(__dirname, "../workspace");
+
+const STATE_DIR = process.env.OPENCLAW_STATE_DIR?.trim() || DEFAULT_STATE_DIR;
+const WORKSPACE_DIR = process.env.OPENCLAW_WORKSPACE_DIR?.trim() || DEFAULT_WORKSPACE_DIR;
 const SETUP_PASSWORD = process.env.SETUP_PASSWORD?.trim();
 
 // Gateway token resolution
@@ -29,10 +35,19 @@ function resolveGatewayToken() {
     return fs.readFileSync(tokenFile, "utf8").trim();
   }
   
+  // Generate new token
   const token = crypto.randomBytes(32).toString("hex");
-  fs.mkdirSync(STATE_DIR, { recursive: true });
-  fs.writeFileSync(tokenFile, token);
-  console.log(`[wrapper] generated new gateway token: ${token.slice(0, 12)}...`);
+  
+  // Create state directory with proper error handling
+  try {
+    fs.mkdirSync(STATE_DIR, { recursive: true });
+    fs.writeFileSync(tokenFile, token);
+    console.log(`[wrapper] generated new gateway token: ${token.slice(0, 12)}...`);
+  } catch (err) {
+    console.error(`[wrapper] failed to write token file: ${err.message}`);
+    console.error(`[wrapper] using in-memory token (not persisted)`);
+  }
+  
   return token;
 }
 
