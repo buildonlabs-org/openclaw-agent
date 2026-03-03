@@ -1099,8 +1099,10 @@ app.get("/api/status", requireApiKey, async (_req, res) => {
     const gatewayRunning = isGatewayReady();
     const starting = isGatewayStarting();
     let gatewayReachable = false;
+    let websocketReady = false;
 
     if (gatewayRunning) {
+      // Check HTTP endpoint
       try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 3000);
@@ -1111,6 +1113,11 @@ app.get("/api/status", requireApiKey, async (_req, res) => {
         clearTimeout(timeout);
         gatewayReachable = r !== null;
       } catch {}
+      
+      // Check WebSocket connection state
+      if (gatewayClient) {
+        websocketReady = gatewayClient.ready;
+      }
     }
 
     res.json({
@@ -1121,6 +1128,8 @@ app.get("/api/status", requireApiKey, async (_req, res) => {
         running: gatewayRunning,
         starting,
         reachable: gatewayReachable,
+        websocketReady,
+        fullyReady: gatewayRunning && gatewayReachable && websocketReady,
         pid: gatewayProc?.pid || null,
         target: GATEWAY_TARGET,
         token: OPENCLAW_GATEWAY_TOKEN // Gateway token for WebSocket connections
@@ -2064,7 +2073,13 @@ app.delete("/api/skills/:slug", requireApiKey, async (req, res) => {
 // Singleton gateway client instance (reuses WebSocket connection)
 let gatewayClient = null;
 
-function getGatewayClient() {
+async function getGatewayClient() {
+  // If client exists and is ready, return it
+  if (gatewayClient && gatewayClient.ready) {
+    return gatewayClient;
+  }
+  
+  // Create new client if none exists
   if (!gatewayClient) {
     const gatewayUrl = `ws://${INTERNAL_GATEWAY_HOST}:${INTERNAL_GATEWAY_PORT}/gateway?token=${OPENCLAW_GATEWAY_TOKEN}`;
     gatewayClient = new OpenClawGatewayClient({
@@ -2072,6 +2087,16 @@ function getGatewayClient() {
       token: OPENCLAW_GATEWAY_TOKEN
     });
   }
+  
+  // Ensure client is connected (this waits for WebSocket handshake)
+  try {
+    await gatewayClient.connect();
+  } catch (err) {
+    console.error('[wrapper] failed to connect gateway client:', err.message);
+    gatewayClient = null; // Reset on failure
+    throw err;
+  }
+  
   return gatewayClient;
 }
 
@@ -2093,7 +2118,7 @@ app.post("/api/chat", requireApiKey, async (req, res) => {
       if (!isGatewayReady()) {
         return res.status(503).json({
           ok: false,
-          error: 'Gateway not ready'
+          error: 'Gateway not ready - subprocess not running'
         });
       }
     }
@@ -2103,7 +2128,8 @@ app.post("/api/chat", requireApiKey, async (req, res) => {
     res.setTimeout(120000);
     
     try {
-      const client = getGatewayClient();
+      // Get client and ensure it's connected (this now waits for WebSocket)
+      const client = await getGatewayClient();
       
       // Generate session key if not provided (per-user sessions)
       const finalSessionKey = sessionKey || `api-session-${Date.now()}`;
@@ -2122,18 +2148,24 @@ app.post("/api/chat", requireApiKey, async (req, res) => {
         timestamp: new Date().toISOString()
       });
     } catch (chatError) {
-      // If connection failed, reset client and try once more
-      if (chatError.message.includes('timeout') || chatError.message.includes('closed')) {
+      console.error('[wrapper] chat error:', chatError.message);
+      
+      // If connection failed, reset client for next request
+      if (chatError.message.includes('timeout') || 
+          chatError.message.includes('closed') || 
+          chatError.message.includes('connect')) {
         gatewayClient = null; // Reset for next request
-        return res.status(504).json({
+        return res.status(503).json({
           ok: false,
-          error: 'Gateway timeout or connection closed',
-          message: chatError.message
+          error: 'Gateway WebSocket connection failed',
+          details: chatError.message,
+          suggestion: 'Gateway may still be initializing. Wait 10-15 seconds and try again.'
         });
       }
       throw chatError;
     }
   } catch (error) {
+    console.error('[wrapper] unexpected error in /api/chat:', error.message);
     res.status(500).json({ 
       ok: false, 
       error: error.message 
