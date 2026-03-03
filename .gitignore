@@ -11,8 +11,6 @@ package-lock.json
 # Data directories (contains sensitive tokens and runtime data)
 .data/
 data/
-.openclaw/
-workspace/
 
 # Logs
 logs/
