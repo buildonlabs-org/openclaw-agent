@@ -15,8 +15,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = Number.parseInt(process.env.PORT ?? "8080", 10);
-const STATE_DIR = process.env.OPENCLAW_STATE_DIR?.trim() || "/data/.openclaw";
-const WORKSPACE_DIR = process.env.OPENCLAW_WORKSPACE_DIR?.trim() || "/data/workspace";
+
+// Auto-detect environment and use appropriate defaults
+const IS_RAILWAY = process.env.RAILWAY_ENVIRONMENT !== undefined;
+const DEFAULT_STATE_DIR = IS_RAILWAY ? "/data/.openclaw" : path.resolve(__dirname, "../.openclaw");
+const DEFAULT_WORKSPACE_DIR = IS_RAILWAY ? "/data/workspace" : path.resolve(__dirname, "../workspace");
+
+const STATE_DIR = process.env.OPENCLAW_STATE_DIR?.trim() || DEFAULT_STATE_DIR;
+const WORKSPACE_DIR = process.env.OPENCLAW_WORKSPACE_DIR?.trim() || DEFAULT_WORKSPACE_DIR;
 const SETUP_PASSWORD = process.env.SETUP_PASSWORD?.trim();
 
 // Gateway token resolution
@@ -29,10 +35,19 @@ function resolveGatewayToken() {
     return fs.readFileSync(tokenFile, "utf8").trim();
   }
   
+  // Generate new token
   const token = crypto.randomBytes(32).toString("hex");
-  fs.mkdirSync(STATE_DIR, { recursive: true });
-  fs.writeFileSync(tokenFile, token);
-  console.log(`[wrapper] generated new gateway token: ${token.slice(0, 12)}...`);
+  
+  // Create state directory with proper error handling
+  try {
+    fs.mkdirSync(STATE_DIR, { recursive: true });
+    fs.writeFileSync(tokenFile, token);
+    console.log(`[wrapper] generated new gateway token: ${token.slice(0, 12)}...`);
+  } catch (err) {
+    console.error(`[wrapper] failed to write token file: ${err.message}`);
+    console.error(`[wrapper] using in-memory token (not persisted)`);
+  }
+  
   return token;
 }
 
@@ -1099,8 +1114,10 @@ app.get("/api/status", requireApiKey, async (_req, res) => {
     const gatewayRunning = isGatewayReady();
     const starting = isGatewayStarting();
     let gatewayReachable = false;
+    let websocketReady = false;
 
     if (gatewayRunning) {
+      // Check HTTP endpoint
       try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 3000);
@@ -1111,6 +1128,22 @@ app.get("/api/status", requireApiKey, async (_req, res) => {
         clearTimeout(timeout);
         gatewayReachable = r !== null;
       } catch {}
+      
+      // Proactively initialize WebSocket client if gateway is reachable
+      // This prevents deadlock where frontend waits for fullyReady but client is never created
+      if (gatewayReachable && !gatewayClient) {
+        try {
+          await getGatewayClient();
+        } catch (err) {
+          console.error('[wrapper] status check: failed to initialize gateway client:', err.message);
+          // Continue - websocketReady will remain false
+        }
+      }
+      
+      // Check WebSocket connection state
+      if (gatewayClient) {
+        websocketReady = gatewayClient.ready;
+      }
     }
 
     res.json({
@@ -1121,6 +1154,8 @@ app.get("/api/status", requireApiKey, async (_req, res) => {
         running: gatewayRunning,
         starting,
         reachable: gatewayReachable,
+        websocketReady,
+        fullyReady: gatewayRunning && gatewayReachable && websocketReady,
         pid: gatewayProc?.pid || null,
         target: GATEWAY_TARGET,
         token: OPENCLAW_GATEWAY_TOKEN // Gateway token for WebSocket connections
@@ -2063,8 +2098,21 @@ app.delete("/api/skills/:slug", requireApiKey, async (req, res) => {
 
 // Singleton gateway client instance (reuses WebSocket connection)
 let gatewayClient = null;
+let gatewayConnectPromise = null; // Lock to prevent concurrent connection attempts
 
-function getGatewayClient() {
+async function getGatewayClient() {
+  // If client exists and is ready, return it
+  if (gatewayClient && gatewayClient.ready) {
+    return gatewayClient;
+  }
+  
+  // If a connection attempt is already in progress, wait for it
+  // This prevents race conditions from concurrent /api/status or /api/chat calls
+  if (gatewayConnectPromise) {
+    return gatewayConnectPromise;
+  }
+  
+  // Create new client if none exists
   if (!gatewayClient) {
     const gatewayUrl = `ws://${INTERNAL_GATEWAY_HOST}:${INTERNAL_GATEWAY_PORT}/gateway?token=${OPENCLAW_GATEWAY_TOKEN}`;
     gatewayClient = new OpenClawGatewayClient({
@@ -2072,7 +2120,23 @@ function getGatewayClient() {
       token: OPENCLAW_GATEWAY_TOKEN
     });
   }
-  return gatewayClient;
+  
+  // Lock: store the connection promise so concurrent calls wait
+  gatewayConnectPromise = (async () => {
+    try {
+      await gatewayClient.connect();
+      return gatewayClient;
+    } catch (err) {
+      console.error('[wrapper] failed to connect gateway client:', err.message);
+      gatewayClient = null; // Reset on failure
+      throw err;
+    } finally {
+      // Always release lock when done (success or failure)
+      gatewayConnectPromise = null;
+    }
+  })();
+  
+  return gatewayConnectPromise;
 }
 
 // POST /api/chat - Send message to agent and get response
@@ -2093,7 +2157,7 @@ app.post("/api/chat", requireApiKey, async (req, res) => {
       if (!isGatewayReady()) {
         return res.status(503).json({
           ok: false,
-          error: 'Gateway not ready'
+          error: 'Gateway not ready - subprocess not running'
         });
       }
     }
@@ -2103,7 +2167,8 @@ app.post("/api/chat", requireApiKey, async (req, res) => {
     res.setTimeout(120000);
     
     try {
-      const client = getGatewayClient();
+      // Get client and ensure it's connected (this now waits for WebSocket)
+      const client = await getGatewayClient();
       
       // Generate session key if not provided (per-user sessions)
       const finalSessionKey = sessionKey || `api-session-${Date.now()}`;
@@ -2122,18 +2187,24 @@ app.post("/api/chat", requireApiKey, async (req, res) => {
         timestamp: new Date().toISOString()
       });
     } catch (chatError) {
-      // If connection failed, reset client and try once more
-      if (chatError.message.includes('timeout') || chatError.message.includes('closed')) {
+      console.error('[wrapper] chat error:', chatError.message);
+      
+      // If connection failed, reset client for next request
+      if (chatError.message.includes('timeout') || 
+          chatError.message.includes('closed') || 
+          chatError.message.includes('connect')) {
         gatewayClient = null; // Reset for next request
-        return res.status(504).json({
+        return res.status(503).json({
           ok: false,
-          error: 'Gateway timeout or connection closed',
-          message: chatError.message
+          error: 'Gateway WebSocket connection failed',
+          details: chatError.message,
+          suggestion: 'Gateway may still be initializing. Wait 10-15 seconds and try again.'
         });
       }
       throw chatError;
     }
   } catch (error) {
+    console.error('[wrapper] unexpected error in /api/chat:', error.message);
     res.status(500).json({ 
       ok: false, 
       error: error.message 
