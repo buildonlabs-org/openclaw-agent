@@ -1,0 +1,138 @@
+# Hyperliquid Trader API - Individual Test Commands
+# Endpoint: hyperliquid-trader-production.up.railway.app
+# API Key: bdd2c7faf67b6070a3e508d20fecfc9e4c1e2175c6018b591b77851593a31b5a
+
+# Set variables for easy copy-paste
+ENDPOINT="https://hyperliquid-trader-production.up.railway.app"
+API_KEY="bdd2c7faf67b6070a3e508d20fecfc9e4c1e2175c6018b591b77851593a31b5a"
+
+# ======================================
+# 1. GET STATUS - Check if agent is running
+# ======================================
+curl -H "Authorization: Bearer bdd2c7faf67b6070a3e508d20fecfc9e4c1e2175c6018b591b77851593a31b5a" \
+  https://hyperliquid-trader-production.up.railway.app/api/status | jq '.'
+
+
+# ======================================
+# 2. GET CURRENT CONFIGURATION
+# ======================================
+curl -H "Authorization: Bearer bdd2c7faf67b6070a3e508d20fecfc9e4c1e2175c6018b591b77851593a31b5a" \
+  https://hyperliquid-trader-production.up.railway.app/api/config/current | jq '.'
+
+
+# ======================================
+# 3. LIST AVAILABLE MODELS
+# ======================================
+curl -H "Authorization: Bearer bdd2c7faf67b6070a3e508d20fecfc9e4c1e2175c6018b591b77851593a31b5a" \
+  https://hyperliquid-trader-production.up.railway.app/api/models | jq '.'
+
+
+# ======================================
+# 4. GET CHANNELS STATUS (Telegram/Discord)
+# ======================================
+curl -H "Authorization: Bearer bdd2c7faf67b6070a3e508d20fecfc9e4c1e2175c6018b591b77851593a31b5a" \
+  https://hyperliquid-trader-production.up.railway.app/api/channels | jq '.'
+
+
+# ======================================
+# 5. LIST INSTALLED SKILLS
+# ======================================
+curl -H "Authorization: Bearer bdd2c7faf67b6070a3e508d20fecfc9e4c1e2175c6018b591b77851593a31b5a" \
+  https://hyperliquid-trader-production.up.railway.app/api/skills | jq '.'
+
+
+# ======================================
+# 6. SEARCH FOR TRADING SKILLS
+# ======================================
+curl -H "Authorization: Bearer bdd2c7faf67b6070a3e508d20fecfc9e4c1e2175c6018b591b77851593a31b5a" \
+  "https://hyperliquid-trader-production.up.railway.app/api/skills/search?q=trading&limit=10" | jq '.'
+
+
+# ======================================
+# 7. SEARCH FOR HYPERLIQUID SKILLS
+# ======================================
+curl -H "Authorization: Bearer bdd2c7faf67b6070a3e508d20fecfc9e4c1e2175c6018b591b77851593a31b5a" \
+  "https://hyperliquid-trader-production.up.railway.app/api/skills/search?q=hyperliquid&limit=10" | jq '.'
+
+
+# ======================================
+# 8. GET RECENT LOGS (last 100 lines)
+# ======================================
+curl -H "Authorization: Bearer bdd2c7faf67b6070a3e508d20fecfc9e4c1e2175c6018b591b77851593a31b5a" \
+  "https://hyperliquid-trader-production.up.railway.app/api/logs?tail=100" | jq '.'
+
+
+# ======================================
+# 9. LIST ACTIVE SESSIONS
+# ======================================
+curl -H "Authorization: Bearer bdd2c7faf67b6070a3e508d20fecfc9e4c1e2175c6018b591b77851593a31b5a" \
+  https://hyperliquid-trader-production.up.railway.app/api/sessions | jq '.'
+
+
+# ======================================
+# 10. LIST PAIRING REQUESTS
+# ======================================
+curl -H "Authorization: Bearer bdd2c7faf67b6070a3e508d20fecfc9e4c1e2175c6018b591b77851593a31b5a" \
+  https://hyperliquid-trader-production.up.railway.app/api/pairing | jq '.'
+
+
+# ======================================
+# 11. LIST DEVICES
+# ======================================
+curl -H "Authorization: Bearer bdd2c7faf67b6070a3e508d20fecfc9e4c1e2175c6018b591b77851593a31b5a" \
+  https://hyperliquid-trader-production.up.railway.app/api/devices | jq '.'
+
+
+# ======================================
+# 12. CHAT - Simple Hello
+# ======================================
+curl -X POST \
+  -H "Authorization: Bearer bdd2c7faf67b6070a3e508d20fecfc9e4c1e2175c6018b591b77851593a31b5a" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Hello! Are you working?", "sessionKey": "test-session-1"}' \
+  https://hyperliquid-trader-production.up.railway.app/api/chat | jq '.'
+
+
+# ======================================
+# 13. CHAT - Ask about capabilities
+# ======================================
+curl -X POST \
+  -H "Authorization: Bearer bdd2c7faf67b6070a3e508d20fecfc9e4c1e2175c6018b591b77851593a31b5a" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "What are your capabilities?", "sessionKey": "test-session-2"}' \
+  https://hyperliquid-trader-production.up.railway.app/api/chat | jq '.'
+
+
+# ======================================
+# 14. CHAT - Ask about trading
+# ======================================
+curl -X POST \
+  -H "Authorization: Bearer bdd2c7faf67b6070a3e508d20fecfc9e4c1e2175c6018b591b77851593a31b5a" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Can you help me with Hyperliquid trading?", "sessionKey": "test-session-3"}' \
+  https://hyperliquid-trader-production.up.railway.app/api/chat | jq '.'
+
+
+# ======================================
+# 15. CHAT - Get current positions
+# ======================================
+curl -X POST \
+  -H "Authorization: Bearer bdd2c7faf67b6070a3e508d20fecfc9e4c1e2175c6018b591b77851593a31b5a" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Show me my current Hyperliquid positions", "sessionKey": "test-session-4"}' \
+  https://hyperliquid-trader-production.up.railway.app/api/chat | jq '.'
+
+
+# ======================================
+# 16. RUN DOCTOR - Diagnostic check
+# ======================================
+curl -X POST \
+  -H "Authorization: Bearer bdd2c7faf67b6070a3e508d20fecfc9e4c1e2175c6018b591b77851593a31b5a" \
+  https://hyperliquid-trader-production.up.railway.app/api/doctor | jq '.'
+
+
+# ======================================
+# QUICK STATUS CHECK (One-liner)
+# ======================================
+curl -s -H "Authorization: Bearer bdd2c7faf67b6070a3e508d20fecfc9e4c1e2175c6018b591b77851593a31b5a" \
+  https://hyperliquid-trader-production.up.railway.app/api/status | jq '{configured: .configured, gateway_running: .gateway.running, gateway_reachable: .gateway.reachable, version: .openclawVersion}'
