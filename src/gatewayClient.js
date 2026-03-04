@@ -30,13 +30,8 @@ export class OpenClawGatewayClient {
 
     this.ws = new WebSocket(this.gatewayUrl);
 
-    this.ws.on("open", () => {
-      console.log("[gateway-client] WebSocket connection opened");
-    });
-
     this.ws.on("message", (data) => this._onMessage(data));
-    this.ws.on("close", (code, reason) => {
-      console.log(`[gateway-client] WebSocket closed: code=${code} reason=${reason || 'none'}`);
+    this.ws.on("close", () => {
       this.ready = false;
       // fail all pending
       for (const [id, p] of this.pending.entries()) {
@@ -44,15 +39,14 @@ export class OpenClawGatewayClient {
         this.pending.delete(id);
       }
     });
-    this.ws.on("error", (err) => {
-      console.error(`[gateway-client] WebSocket error:`, err.message);
+    this.ws.on("error", () => {
       this.ready = false;
     });
 
     // Wait until ready
     const start = Date.now();
     while (!this.ready) {
-      if (Date.now() - start > 30_000) throw new Error("Gateway connect timeout");
+      if (Date.now() - start > 10_000) throw new Error("Gateway connect timeout");
       await sleep(50);
     }
   }
@@ -99,12 +93,7 @@ export class OpenClawGatewayClient {
 
     // 2) Connect response -> mark ready
     if (msg.type === "res" && msg.id === "c1") {
-      if (msg.ok) {
-        this.ready = true;
-        console.log("[gateway] connection established successfully");
-      } else {
-        console.error("[gateway] connection failed:", JSON.stringify(msg, null, 2));
-      }
+      if (msg.ok) this.ready = true;
       return;
     }
 
