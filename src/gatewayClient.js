@@ -30,8 +30,13 @@ export class OpenClawGatewayClient {
 
     this.ws = new WebSocket(this.gatewayUrl);
 
+    this.ws.on("open", () => {
+      console.log("[gateway-client] WebSocket connection opened");
+    });
+
     this.ws.on("message", (data) => this._onMessage(data));
-    this.ws.on("close", () => {
+    this.ws.on("close", (code, reason) => {
+      console.log(`[gateway-client] WebSocket closed: code=${code} reason=${reason || 'none'}`);
       this.ready = false;
       // fail all pending
       for (const [id, p] of this.pending.entries()) {
@@ -39,14 +44,15 @@ export class OpenClawGatewayClient {
         this.pending.delete(id);
       }
     });
-    this.ws.on("error", () => {
+    this.ws.on("error", (err) => {
+      console.error(`[gateway-client] WebSocket error:`, err.message);
       this.ready = false;
     });
 
     // Wait until ready
     const start = Date.now();
     while (!this.ready) {
-      if (Date.now() - start > 10_000) throw new Error("Gateway connect timeout");
+      if (Date.now() - start > 30_000) throw new Error("Gateway connect timeout");
       await sleep(50);
     }
   }
@@ -75,7 +81,7 @@ export class OpenClawGatewayClient {
         params: {
           minProtocol: 3,
           maxProtocol: 3,
-          client: { id: "api-client", version: "1.0.0", platform: "linux", mode: "api" },
+          client: { id: "cli", version: "1.0.0", platform: "linux", mode: "cli" },
           role: "operator",
           scopes: ["operator.read", "operator.write", "operator.admin"],
           caps: [],
@@ -83,7 +89,7 @@ export class OpenClawGatewayClient {
           permissions: {},
           auth: { token: this.token },
           locale: "en-US",
-          userAgent: "backend-api-client",
+          userAgent: "backend-gateway-client",
           // Omit device field to skip device pairing requirement
         },
       });
@@ -93,7 +99,12 @@ export class OpenClawGatewayClient {
 
     // 2) Connect response -> mark ready
     if (msg.type === "res" && msg.id === "c1") {
-      if (msg.ok) this.ready = true;
+      if (msg.ok) {
+        this.ready = true;
+        console.log("[gateway] connection established successfully");
+      } else {
+        console.error("[gateway] connection failed:", JSON.stringify(msg, null, 2));
+      }
       return;
     }
 

@@ -250,6 +250,7 @@ async function startGateway() {
     "--token",
     OPENCLAW_GATEWAY_TOKEN,
     "--allow-unconfigured",
+    "--allow-unpaired", // Allow connections without device pairing
   ];
 
   gatewayProc = childProcess.spawn(OPENCLAW_CLI, args, {
