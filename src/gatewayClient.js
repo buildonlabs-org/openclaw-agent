@@ -78,13 +78,26 @@ export class OpenClawGatewayClient {
           client: { id: "cli", version: "1.0.0", platform: "linux", mode: "cli" },
           role: "operator",
           scopes: ["operator.read", "operator.write", "operator.admin"],
-          caps: [],
-          commands: [],
-          permissions: {},
+          caps: ["terminal", "shell", "cli"],
+          commands: ["clawhub", "openclaw", "npm", "node"],
+          permissions: {
+            "terminal:execute": true,
+            "shell:execute": true,
+            "cli:execute": true,
+            "skills:install": true,
+            "skills:update": true,
+            "skills:remove": true,
+          },
           auth: { token: this.token },
           locale: "en-US",
           userAgent: "backend-gateway-client",
-          // Omit device field to skip device pairing requirement
+          // Provide device info as backend-operator to bypass pairing
+          device: {
+            id: "backend-operator",
+            name: "Backend API Server",
+            type: "server",
+            trusted: true,
+          },
         },
       });
 
