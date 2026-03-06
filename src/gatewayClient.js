@@ -1,21 +1,79 @@
 // gatewayClient.js
 import WebSocket from "ws";
 import crypto from "crypto";
+import fs from "fs";
+import path from "path";
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
 export class OpenClawGatewayClient {
-  constructor({ gatewayUrl, token }) {
+  constructor({ gatewayUrl, token, keyPath }) {
     this.gatewayUrl = gatewayUrl;
     this.token = token;
+    this.keyPath = keyPath;
+    this.onPairingRequired = null; // Callback for pairing events
+
+    // Load or generate persistent device keypair
+    let publicKey, privateKey;
+    
+    if (keyPath && fs.existsSync(keyPath)) {
+      // Load existing keypair
+      try {
+        const keyData = JSON.parse(fs.readFileSync(keyPath, "utf8"));
+        privateKey = crypto.createPrivateKey({
+          key: Buffer.from(keyData.privateKey, "base64"),
+          format: "der",
+          type: "pkcs8"
+        });
+        publicKey = crypto.createPublicKey(privateKey);
+        console.log("[gateway-client] loaded persistent device identity");
+      } catch (err) {
+        console.log(`[gateway-client] failed to load keys, generating new: ${err.message}`);
+        ({ publicKey, privateKey } = crypto.generateKeyPairSync("ed25519"));
+      }
+    } else {
+      // Generate new keypair
+      ({ publicKey, privateKey } = crypto.generateKeyPairSync("ed25519"));
+    }
+
+    this.privateKey = privateKey;
+
+    // Persist keys if path provided
+    if (keyPath && !fs.existsSync(keyPath)) {
+      try {
+        const keyDir = path.dirname(keyPath);
+        fs.mkdirSync(keyDir, { recursive: true });
+        
+        const keyData = {
+          privateKey: privateKey.export({ type: "pkcs8", format: "der" }).toString("base64"),
+          created: new Date().toISOString()
+        };
+        fs.writeFileSync(keyPath, JSON.stringify(keyData), "utf8");
+        console.log(`[gateway-client] saved device identity to ${keyPath}`);
+      } catch (err) {
+        console.error(`[gateway-client] failed to save keys: ${err.message}`);
+      }
+    }
+
+    const spkiDer = publicKey.export({ type: "spki", format: "der" });
+    this.rawPublicKey = spkiDer.subarray(spkiDer.length - 32);
+    this.rawPublicKeyB64 = this.rawPublicKey.toString("base64");
+    this.deviceId = crypto.createHash("sha256").update(this.rawPublicKey).digest("hex");
+
+    console.log(`[gateway-client] device ID: ${this.deviceId}`);
 
     this.ws = null;
     this.ready = false;
     this.pending = new Map(); // reqId -> { resolve, reject, chunks, done }
     this.messageId = 1;
     this.lastChatReqId = null; // Track latest chat request for event routing
+  }
+
+  buildDeviceAuthPayloadV2({ nonce, signedAtMs, clientId, clientMode, role, scopes }) {
+    const scopesStr = scopes.join(",");
+    return `v2|${this.deviceId}|${clientId}|${clientMode}|${role}|${scopesStr}|${signedAtMs}|${this.token}|${nonce}`;
   }
 
   async connect() {
@@ -66,8 +124,27 @@ export class OpenClawGatewayClient {
     // Debug logging
     console.log("[gateway] <=", msg.type, msg.event || msg.id || "", msg.ok === false ? msg.error : "");
 
-    // 1) Challenge -> send simplified connect (token-only, no device)
+    // 1) Challenge -> send signed connect
     if (msg.type === "event" && msg.event === "connect.challenge") {
+      const nonce = msg.payload?.nonce;
+      const signedAt = Date.now();
+
+      const clientId = "cli";
+      const clientMode = "cli";
+      const role = "operator";
+      const scopes = ["operator.read", "operator.write", "operator.admin"];
+
+      const payload = this.buildDeviceAuthPayloadV2({
+        nonce,
+        signedAtMs: signedAt,
+        clientId,
+        clientMode,
+        role,
+        scopes,
+      });
+
+      const signature = crypto.sign(null, Buffer.from(payload, "utf8"), this.privateKey);
+
       this._send({
         type: "req",
         id: "c1",
@@ -75,16 +152,22 @@ export class OpenClawGatewayClient {
         params: {
           minProtocol: 3,
           maxProtocol: 3,
-          client: { id: "cli", version: "1.0.0", platform: "linux", mode: "cli" },
-          role: "operator",
-          scopes: ["operator.read", "operator.write", "operator.admin"],
+          client: { id: clientId, version: "0.0.0", platform: "linux", mode: clientMode },
+          role,
+          scopes,
           caps: [],
           commands: [],
           permissions: {},
           auth: { token: this.token },
           locale: "en-US",
           userAgent: "backend-gateway-client",
-          // Omit device field to skip device pairing requirement
+          device: {
+            id: this.deviceId,
+            publicKey: this.rawPublicKeyB64,
+            signature: signature.toString("base64"),
+            signedAt,
+            nonce,
+          },
         },
       });
 
@@ -94,6 +177,15 @@ export class OpenClawGatewayClient {
     // 2) Connect response -> mark ready
     if (msg.type === "res" && msg.id === "c1") {
       if (msg.ok) this.ready = true;
+      return;
+    }
+
+    // 2b) Device pairing requested event
+    if (msg.type === "event" && msg.event === "device.pair.requested") {
+      console.log("[gateway-client] device pairing requested:", this.deviceId);
+      if (this.onPairingRequired) {
+        this.onPairingRequired(this.deviceId);
+      }
       return;
     }
 
