@@ -163,10 +163,31 @@ async function killExistingGatewayProcesses() {
 
 async function startGateway() {
   if (gatewayProc) return;
-  if (!isConfigured()) throw new Error("Gateway cannot start: not configured");
+  // Allow gateway to start with --allow-unconfigured flag even without config file
 
   fs.mkdirSync(STATE_DIR, { recursive: true });
   fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
+
+  // Ensure minimal config file exists
+  const cfgPath = configPath();
+  if (!fs.existsSync(cfgPath)) {
+    try {
+      console.log("[gateway] creating minimal config file...");
+      const minimalConfig = {
+        version: 1,
+        gateway: {
+          controlUi: {
+            allowInsecureAuth: true,
+            allowedOrigins: ["http://localhost:8080", "http://127.0.0.1:8080", "https://*.railway.app"]
+          }
+        }
+      };
+      fs.writeFileSync(cfgPath, JSON.stringify(minimalConfig, null, 2), 'utf8');
+      console.log("[gateway] created config at", cfgPath);
+    } catch (err) {
+      console.log("[gateway] could not create config:", err.message);
+    }
+  }
 
   // Kill any orphaned gateway processes first
   await killExistingGatewayProcesses();
@@ -277,13 +298,13 @@ async function startGateway() {
   gatewayProc.on("exit", (code, signal) => {
     console.error(`[gateway] exited code=${code} signal=${signal}`);
     gatewayProc = null;
-    if (!shuttingDown && isConfigured()) {
+    if (!shuttingDown) {
       // Exponential backoff: 2s, 4s, 8s, 16s, 30s (max)
       restartAttempts++;
       const delay = Math.min(2000 * Math.pow(2, restartAttempts - 1), MAX_RESTART_DELAY);
       console.log(`[gateway] scheduling auto-restart in ${delay / 1000}s (attempt ${restartAttempts})...`);
       setTimeout(() => {
-        if (!shuttingDown && !gatewayProc && isConfigured()) {
+        if (!shuttingDown && !gatewayProc) {
           ensureGatewayRunning().catch((err) => {
             console.error(`[gateway] auto-restart failed: ${err.message}`);
           });
@@ -2405,21 +2426,20 @@ const server = app.listen(PORT, () => {
   console.log(`[wrapper] configured: ${isConfigured()}`);
   console.log(`[wrapper] gateway token: ${OPENCLAW_GATEWAY_TOKEN.slice(0, 12)}...`);
 
-  if (isConfigured()) {
-    (async () => {
-      try {
-        console.log("[wrapper] running openclaw doctor --fix...");
-        const dr = await runCmd(OPENCLAW_CLI, ["doctor", "--fix"]);
-        console.log(`[wrapper] doctor --fix exit=${dr.code}`);
-        if (dr.output) console.log(dr.output);
-      } catch (err) {
-        console.warn(`[wrapper] doctor --fix failed: ${err.message}`);
-      }
-      await ensureGatewayRunning();
-    })().catch((err) => {
-      console.error(`[wrapper] failed to start gateway at boot: ${err.message}`);
-    });
-  }
+  // Always start gateway (it has --allow-unconfigured flag)
+  (async () => {
+    try {
+      console.log("[wrapper] running openclaw doctor --fix...");
+      const dr = await runCmd(OPENCLAW_CLI, ["doctor", "--fix"]);
+      console.log(`[wrapper] doctor --fix exit=${dr.code}`);
+      if (dr.output) console.log(dr.output);
+    } catch (err) {
+      console.warn(`[wrapper] doctor --fix failed: ${err.message}`);
+    }
+    await ensureGatewayRunning();
+  })().catch((err) => {
+    console.error(`[wrapper] failed to start gateway at boot: ${err.message}`);
+  });
 });
 
 // Set server-wide timeout to 10 minutes (default is often 120s or 30s depending on Node version)
@@ -2429,10 +2449,7 @@ server.keepAliveTimeout = 605_000; // Slightly higher than timeout
 
 // WebSocket upgrade handler
 server.on("upgrade", async (req, socket, head) => {
-  if (!isConfigured()) {
-    socket.destroy();
-    return;
-  }
+  // Always allow WebSocket upgrades (gateway has --allow-unconfigured)
   try {
     await ensureGatewayRunning();
   } catch (err) {
