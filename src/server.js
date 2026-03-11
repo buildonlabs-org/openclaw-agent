@@ -203,6 +203,21 @@ async function startGateway() {
     console.log(`[gateway] allowInsecureAuth config warning: ${err.message}`);
   }
 
+  // Configure gateway to skip device pairing for API clients
+  try {
+    console.log("[gateway] configuring device policy for API clients...");
+    // Allow token-only auth without device pairing requirement
+    await runCmd(OPENCLAW_CLI, [
+      "config",
+      "set",
+      "gateway.auth.requireDevice",
+      "false",
+    ]);
+    console.log("[gateway] requireDevice: false");
+  } catch (err) {
+    console.log(`[gateway] device policy config warning: ${err.message}`);
+  }
+
   // Configure allowed origins for Railway/external access
   try {
     console.log("[gateway] configuring CORS origins...");
@@ -1785,39 +1800,28 @@ app.get("/api/skills/search", requireApiKey, async (req, res) => {
       
       // Parse response - format may vary
       let results = [];
+      const mapSkillItem = (item) => ({
+        slug: item.package || item.slug || item.id || item.name,
+        name: item.name || item.title || (item.package || item.slug || item.id),
+        description: item.description || item.summary || '',
+        author: item.author || item.creator || item.owner,
+        version: item.version || item.latest_version || item.latestVersion,
+        tags: item.tags || [],
+        package: item.package || item.slug,
+        score: item.score || item.relevance,
+        // Include repository/homepage URLs if available
+        homepage: item.homepage || item.url || item.website || undefined,
+        repository: item.repository || item.repo || item.github || undefined,
+        // Keep raw item for debugging
+        _raw: item
+      });
+      
       if (Array.isArray(data)) {
-        results = data.map(item => ({
-          slug: item.package || item.slug || item.id || item.name,
-          name: item.name || item.title || (item.package || item.slug || item.id),
-          description: item.description || item.summary || '',
-          author: item.author || item.creator || item.owner,
-          version: item.version || item.latest_version || item.latestVersion,
-          tags: item.tags || [],
-          package: item.package || item.slug,
-          score: item.score || item.relevance
-        }));
+        results = data.map(mapSkillItem);
       } else if (data.results && Array.isArray(data.results)) {
-        results = data.results.map(item => ({
-          slug: item.package || item.slug || item.id || item.name,
-          name: item.name || item.title || (item.package || item.slug || item.id),
-          description: item.description || item.summary || '',
-          author: item.author || item.creator || item.owner,
-          version: item.version || item.latest_version || item.latestVersion,
-          tags: item.tags || [],
-          package: item.package || item.slug,
-          score: item.score || item.relevance
-        }));
+        results = data.results.map(mapSkillItem);
       } else if (data.skills && Array.isArray(data.skills)) {
-        results = data.skills.map(item => ({
-          slug: item.package || item.slug || item.id || item.name,
-          name: item.name || item.title || (item.package || item.slug || item.id),
-          description: item.description || item.summary || '',
-          author: item.author || item.creator || item.owner,
-          version: item.version || item.latest_version || item.latestVersion,
-          tags: item.tags || [],
-          package: item.package || item.slug,
-          score: item.score || item.relevance
-        }));
+        results = data.skills.map(mapSkillItem);
       }
       
       // Log raw data for debugging (first result only)
@@ -2023,6 +2027,141 @@ app.post("/api/skills/update", requireApiKey, async (req, res) => {
   }
 });
 
+// GET /api/skills/inspect/:slug - Inspect a skill from ClawHub (even if not installed)
+app.get("/api/skills/inspect/:slug", requireApiKey, async (req, res) => {
+  try {
+    const { slug } = req.params;
+    const { file } = req.query; // Optional: specific file to fetch (e.g., SKILL.md)
+    
+    if (!slug) {
+      return res.status(400).json({ ok: false, error: 'Missing skill slug' });
+    }
+    
+    const CLAWHUB_CLI = process.env.CLAWHUB_CLI?.trim() || "clawhub";
+    const args = ["inspect", slug];
+    
+    if (file) {
+      args.push("--file", file);
+    } else {
+      args.push("--json");
+    }
+    
+    const result = await runCmd(CLAWHUB_CLI, args);
+    
+    if (result.code !== 0) {
+      return res.status(404).json({
+        ok: false,
+        error: `Skill not found or inspect failed: ${slug}`,
+        output: result.output
+      });
+    }
+    
+    // If fetching a specific file, return as plain text
+    if (file) {
+      res.json({
+        ok: true,
+        slug,
+        file,
+        content: result.output
+      });
+      return;
+    }
+    
+    // Otherwise parse as JSON
+    try {
+      const data = JSON.parse(result.output);
+      res.json({
+        ok: true,
+        slug,
+        skill: data
+      });
+    } catch (parseError) {
+      // If JSON parsing fails, return raw output
+      res.json({
+        ok: true,
+        slug,
+        rawOutput: result.output
+      });
+    }
+  } catch (error) {
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message 
+    });
+  }
+});
+
+// GET /api/skills/:slug - Get detailed skill information
+app.get("/api/skills/:slug", requireApiKey, async (req, res) => {
+  try {
+    const { slug } = req.params;
+    
+    if (!slug) {
+      return res.status(400).json({ ok: false, error: 'Missing skill slug' });
+    }
+    
+    // Check if skill exists
+    const skillPath = path.join(WORKSPACE_DIR, 'skills', slug);
+    const skillMdPath = path.join(skillPath, 'SKILL.md');
+    
+    if (!fs.existsSync(skillPath)) {
+      return res.status(404).json({ 
+        ok: false, 
+        error: `Skill not found: ${slug}`,
+        path: skillPath
+      });
+    }
+    
+    // Read SKILL.md frontmatter if it exists
+    let metadata = { slug };
+    
+    if (fs.existsSync(skillMdPath)) {
+      const content = fs.readFileSync(skillMdPath, 'utf8');
+      
+      // Parse YAML frontmatter (between --- markers)
+      const frontmatterMatch = content.match(/^---\s*\n([\s\S]*?)\n---/);
+      if (frontmatterMatch) {
+        const frontmatter = frontmatterMatch[1];
+        
+        // Simple parser for common fields
+        const nameMatch = frontmatter.match(/^name:\s*(.+)$/m);
+        const descMatch = frontmatter.match(/^description:\s*(.+)$/m);
+        const homepageMatch = frontmatter.match(/^homepage:\s*(.+)$/m);
+        const emojiMatch = frontmatter.match(/^emoji:\s*(.+)$/m);
+        
+        if (nameMatch) metadata.name = nameMatch[1].trim();
+        if (descMatch) metadata.description = descMatch[1].trim();
+        if (homepageMatch) metadata.homepage = homepageMatch[1].trim();
+        if (emojiMatch) metadata.emoji = emojiMatch[1].trim();
+      }
+    }
+    
+    // Read version from _meta.json if it exists
+    const metaPath = path.join(skillPath, '_meta.json');
+    if (fs.existsSync(metaPath)) {
+      try {
+        const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+        metadata.version = meta.version;
+        metadata.publishedAt = meta.publishedAt;
+        metadata.ownerId = meta.ownerId;
+      } catch (e) {
+        // Ignore parse errors
+      }
+    }
+    
+    res.json({
+      ok: true,
+      skill: metadata,
+      path: skillPath
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message 
+    });
+  }
+});
+
 // DELETE /api/skills/:slug - Delete a skill
 app.delete("/api/skills/:slug", requireApiKey, async (req, res) => {
   try {
@@ -2069,47 +2208,11 @@ function getGatewayClient() {
     const gatewayUrl = `ws://${INTERNAL_GATEWAY_HOST}:${INTERNAL_GATEWAY_PORT}/gateway?token=${OPENCLAW_GATEWAY_TOKEN}`;
     gatewayClient = new OpenClawGatewayClient({
       gatewayUrl,
-      token: OPENCLAW_GATEWAY_TOKEN
+      token: OPENCLAW_GATEWAY_TOKEN,
+      skipDeviceAuth: true // Use token-only auth for backend API client
     });
   }
   return gatewayClient;
-}
-
-/**
- * Detect whether the user's message is requesting a ClawHub skill installation
- * and extract the skill slug.  Returns null if no install intent is found.
- *
- * Supported patterns (case-insensitive):
- *   "install <slug> skill"
- *   "install the <slug> skill"
- *   "install <slug>"
- *   "can you install <slug>"
- *   "please install <slug>"
- */
-function detectSkillInstallIntent(message) {
-  if (!message || typeof message !== "string") return null;
-
-  const patterns = [
-    // "install [the] <slug> [skill]"
-    /\binstall\s+(?:the\s+)?([a-z0-9](?:[a-z0-9_-]*[a-z0-9])?)\s+skill\b/i,
-    // "install [the] <slug>" at end of sentence
-    /\binstall\s+(?:the\s+)?([a-z0-9](?:[a-z0-9_-]*[a-z0-9])?)(?:\s*[.!?]?\s*$)/i,
-    // "install skill <slug>"
-    /\binstall\s+skill\s+([a-z0-9](?:[a-z0-9_-]*[a-z0-9])?)/i,
-  ];
-
-  for (const re of patterns) {
-    const m = message.match(re);
-    if (m && m[1]) {
-      // Normalise to lowercase slug and exclude common stop-words
-      const slug = m[1].toLowerCase();
-      if (!["a", "an", "the", "this", "that", "it", "skill"].includes(slug)) {
-        return slug;
-      }
-    }
-  }
-
-  return null;
 }
 
 // POST /api/chat - Send message to agent and get response
@@ -2138,39 +2241,6 @@ app.post("/api/chat", requireApiKey, async (req, res) => {
     // Set request timeout
     req.setTimeout(120000); // 2 minutes
     res.setTimeout(120000);
-
-    // Detect skill installation intent before forwarding to the AI.
-    // When the user asks to install a skill, trigger the actual installation
-    // and include the result alongside the AI's conversational response.
-    const installSlug = detectSkillInstallIntent(message);
-    let skillInstallResult = null;
-    if (installSlug) {
-      console.log(`[api/chat] detected skill install intent: ${installSlug}`);
-      const CLAWHUB_CLI = process.env.CLAWHUB_CLI?.trim() || "clawhub";
-      const installArgs = ["install", installSlug, "--workdir", WORKSPACE_DIR, "--no-input"];
-      try {
-        const installRun = await runCmd(CLAWHUB_CLI, installArgs);
-        const installOutput = installRun.output || "";
-        const installSuccess =
-          installRun.code === 0 || installOutput.toLowerCase().includes("installed");
-        skillInstallResult = {
-          slug: installSlug,
-          ok: installSuccess,
-          output: installOutput,
-          exitCode: installRun.code,
-        };
-        console.log(
-          `[api/chat] skill install ${installSlug}: ${installSuccess ? "success" : "failed"}`
-        );
-      } catch (installError) {
-        skillInstallResult = {
-          slug: installSlug,
-          ok: false,
-          error: installError.message,
-        };
-        console.error(`[api/chat] skill install error: ${installError.message}`);
-      }
-    }
     
     try {
       const client = getGatewayClient();
@@ -2184,20 +2254,13 @@ app.post("/api/chat", requireApiKey, async (req, res) => {
         text: message
       });
       
-      const result = {
+      res.json({
         ok: true,
         agentId,
         sessionKey: finalSessionKey,
         response,
         timestamp: new Date().toISOString()
-      };
-
-      // Include skill installation result when a skill install was triggered
-      if (skillInstallResult) {
-        result.skillInstall = skillInstallResult;
-      }
-
-      res.json(result);
+      });
     } catch (chatError) {
       // If connection failed due to pairing/auth issues, reset the client so the
       // next request will attempt a fresh connection with device authentication.
@@ -2214,8 +2277,7 @@ app.post("/api/chat", requireApiKey, async (req, res) => {
         return res.status(504).json({
           ok: false,
           error: 'Gateway timeout or connection closed',
-          message: chatError.message,
-          ...(skillInstallResult && { skillInstall: skillInstallResult }),
+          message: chatError.message
         });
       }
       throw chatError;

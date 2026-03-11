@@ -616,6 +616,64 @@ curl -H "Authorization: Bearer YOUR_API_KEY" \
 
 ---
 
+## 10a. Get Skill Details
+
+**`GET /api/skills/:slug`**
+
+Get detailed information about an installed skill, including repository URL if available.
+
+**Request:**
+```bash
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+  https://your-agent.railway.app/api/skills/hyperliquid-cli
+```
+
+**Response:**
+```json
+{
+  "ok": true,
+  "skill": {
+    "slug": "hyperliquid-cli",
+    "name": "hyperliquid",
+    "description": "Trade crypto, stocks, and commodities on Hyperliquid",
+    "homepage": "https://github.com/chrisling-dev/hyperliquid-cli",
+    "emoji": "🦞",
+    "version": "1.0.3",
+    "publishedAt": 1769965464499,
+    "ownerId": "kn7e2pwn1x24bd5b4kdjbm4v7980bmc2"
+  },
+  "path": "/data/workspace/skills/hyperliquid-cli"
+}
+```
+
+**Response (Not Found):**
+```json
+{
+  "ok": false,
+  "error": "Skill not found: non-existent-skill",
+  "path": "/data/workspace/skills/non-existent-skill"
+}
+```
+
+**Use Case:**
+- Get repository URL for manual installation/updates
+- Display skill details in UI
+- Clone skill from source to bypass ClawHub rate limits
+
+**Example - Clone from repository:**
+```bash
+# 1. Get skill details to find repository URL
+REPO=$(curl -s -H "Authorization: Bearer $API_KEY" \
+  "https://your-agent.railway.app/api/skills/hyperliquid-cli" \
+  | jq -r '.skill.homepage')
+
+# 2. Clone to local skills directory (if rate limited)
+cd .data/workspace/skills
+git clone $REPO another-skill-name
+```
+
+---
+
 ## 11. Search Skills
 
 **`GET /api/skills/search?q=<query>`**
@@ -648,7 +706,9 @@ curl -H "Authorization: Bearer YOUR_API_KEY" \
       "version": "1.2.0",
       "tags": ["database", "backup"],
       "package": "postgres-backup",
-      "score": 4.523
+      "score": 4.523,
+      "homepage": "https://github.com/username/postgres-backup",
+      "repository": "https://github.com/username/postgres-backup"
     },
     {
       "slug": "postgres-monitor",
@@ -675,6 +735,8 @@ curl -H "Authorization: Bearer YOUR_API_KEY" \
 - `tags`: Skill category tags
 - `package`: Full package name (same as slug)
 - `score`: Relevance score from search
+- `homepage`: Skill homepage URL (if available)
+- `repository`: GitHub/Git repository URL (if available)
 
 **Installing a Skill:**
 
@@ -709,6 +771,27 @@ curl -X POST \
 - Cache is automatic - 24 hour TTL per query
 - **Handle duplicate slugs:** Show full name + description + author to help users choose
 - Link to Telegram/Discord for actual installation
+
+**Manual Installation (Bypass Rate Limits):**
+
+If a skill has a public GitHub repository, you can install it manually without ClawHub:
+
+1. **Search for the skill** to get its repository URL:
+   ```bash
+   curl -H "Authorization: Bearer YOUR_API_KEY" \
+     "https://your-agent.railway.app/api/skills/search?q=morpho-earn"
+   # Look for the "repository" field in results
+   ```
+
+2. **Clone directly to skills directory** (on the server):
+   ```bash
+   cd /data/workspace/skills
+   git clone https://github.com/author/skill-name.git
+   ```
+
+3. **Restart agent** to load the skill
+
+This completely bypasses ClawHub rate limits since you're installing from source.
 
 ---
 

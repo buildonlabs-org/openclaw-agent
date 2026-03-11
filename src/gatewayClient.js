@@ -1,6 +1,9 @@
 // gatewayClient.js
 import WebSocket from "ws";
 import crypto from "crypto";
+import fs from "fs";
+import path from "path";
+import os from "os";
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -16,19 +19,76 @@ function buildDeviceAuthPayloadV2({ deviceId, clientId, clientMode, role, scopes
   return `v2|${deviceId}|${clientId}|${clientMode}|${role}|${scopesStr}|${signedAtMs}|${token}|${nonce}`;
 }
 
+// Load or generate a persistent device key pair for this client.
+// Keys are stored in STATE_DIR so they persist across restarts and reconnections.
+// This ensures the gateway sees the same device ID and won't require re-pairing.
+function loadOrGenerateDeviceKeys() {
+  const stateDir = process.env.OPENCLAW_STATE_DIR?.trim() || "/data/.openclaw";
+  const keyPath = path.join(stateDir, "gateway-client-device.key");
+
+  try {
+    // Try to load existing key
+    if (fs.existsSync(keyPath)) {
+      const keyData = JSON.parse(fs.readFileSync(keyPath, "utf8"));
+      const privateKey = crypto.createPrivateKey({
+        key: Buffer.from(keyData.privateKey, "base64"),
+        format: "der",
+        type: "pkcs8",
+      });
+      const publicKey = crypto.createPublicKey(privateKey);
+      const spkiDer = publicKey.export({ type: "spki", format: "der" });
+      const rawPublicKey = spkiDer.subarray(spkiDer.length - 32);
+      const deviceId = deviceIdFromRawPublicKey(rawPublicKey);
+      
+      console.log(`[gateway-client] loaded device key: ${deviceId.slice(0, 12)}...`);
+      return { privateKey, rawPublicKey, deviceId };
+    }
+  } catch (err) {
+    console.warn(`[gateway-client] failed to load device key: ${err.message}`);
+  }
+
+  // Generate new key pair
+  const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
+  const spkiDer = publicKey.export({ type: "spki", format: "der" });
+  const rawPublicKey = spkiDer.subarray(spkiDer.length - 32);
+  const deviceId = deviceIdFromRawPublicKey(rawPublicKey);
+
+  // Save for future use
+  try {
+    fs.mkdirSync(stateDir, { recursive: true });
+    const pkcs8Der = privateKey.export({ type: "pkcs8", format: "der" });
+    fs.writeFileSync(keyPath, JSON.stringify({
+      privateKey: pkcs8Der.toString("base64"),
+      deviceId,
+    }));
+    console.log(`[gateway-client] generated new device key: ${deviceId.slice(0, 12)}...`);
+  } catch (err) {
+    console.warn(`[gateway-client] failed to save device key: ${err.message}`);
+  }
+
+  return { privateKey, rawPublicKey, deviceId };
+}
+
 export class OpenClawGatewayClient {
-  constructor({ gatewayUrl, token }) {
+  constructor({ gatewayUrl, token, skipDeviceAuth = false }) {
     this.gatewayUrl = gatewayUrl;
     this.token = token;
+    this.skipDeviceAuth = skipDeviceAuth; // Skip device authentication for API clients
 
-    // Generate a persistent Ed25519 key pair for device authentication.
-    // The gateway may require a signed device payload even when using token auth.
-    const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
-    this._privateKey = privateKey;
-    // Extract the raw 32-byte public key from the SPKI DER encoding
-    const spkiDer = publicKey.export({ type: "spki", format: "der" });
-    this._rawPublicKey = spkiDer.subarray(spkiDer.length - 32);
-    this._deviceId = deviceIdFromRawPublicKey(this._rawPublicKey);
+    if (!skipDeviceAuth) {
+      // Load or generate a persistent device key pair.
+      // This ensures the same device ID is used across reconnections,
+      // so the gateway won't require repeated pairing approvals.
+      const deviceKeys = loadOrGenerateDeviceKeys();
+      this._privateKey = deviceKeys.privateKey;
+      this._rawPublicKey = deviceKeys.rawPublicKey;
+      this._deviceId = deviceKeys.deviceId;
+    } else {
+      console.log("[gateway-client] device auth disabled for API client");
+      this._privateKey = null;
+      this._rawPublicKey = null;
+      this._deviceId = null;
+    }
 
     this.ws = null;
     this.ready = false;
@@ -119,9 +179,9 @@ export class OpenClawGatewayClient {
         userAgent: "backend-gateway-client",
       };
 
-      // Include signed device payload when the gateway issues a nonce challenge.
-      // This satisfies gateways that require device pairing even with token auth.
-      if (nonce) {
+      // Include signed device payload when the gateway issues a nonce challenge,
+      // UNLESS skipDeviceAuth is enabled (for API/backend clients that trust token-only auth).
+      if (nonce && !this.skipDeviceAuth && this._deviceId) {
         const payload = buildDeviceAuthPayloadV2({
           deviceId: this._deviceId,
           clientId,
@@ -140,6 +200,9 @@ export class OpenClawGatewayClient {
           signedAt,
           nonce,
         };
+        console.log("[gateway-client] sending device auth with id:", this._deviceId.slice(0, 12) + "...");
+      } else if (nonce && this.skipDeviceAuth) {
+        console.log("[gateway-client] skipping device auth (token-only mode)");
       }
 
       this._send({
