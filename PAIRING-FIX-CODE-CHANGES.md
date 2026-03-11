@@ -290,7 +290,7 @@ curl -X POST \
 
 **Logs:**
 ```
-[gateway-client] connected successfully
+[gateway-client] connected successfully 
 Installing self-improving-agent...
 ✅ Skill installed successfully
 ```
