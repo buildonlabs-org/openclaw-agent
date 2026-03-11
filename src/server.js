@@ -2130,6 +2130,35 @@ app.delete("/api/skills/:slug", requireApiKey, async (req, res) => {
   }
 });
 
+// POST /api/admin/restart - Restart the Gateway process
+app.post("/api/admin/restart", requireApiKey, async (req, res) => {
+  try {
+    console.log("[api/admin/restart] Restarting Gateway to load new skills...");
+    
+    // Send response immediately before restart
+    res.json({
+      ok: true,
+      message: "Gateway restart initiated. Skills will be reloaded.",
+      hint: "Gateway should be ready in 5-10 seconds. Use GET /health to check status."
+    });
+    
+    // Restart in background after response is sent
+    setImmediate(async () => {
+      try {
+        await restartGateway();
+        console.log("[api/admin/restart] Gateway restarted successfully");
+      } catch (err) {
+        console.error("[api/admin/restart] Error restarting Gateway:", err);
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message 
+    });
+  }
+});
+
 // ===== CHAT/MESSAGING API ROUTE =====
 
 // Singleton gateway client instance (reuses WebSocket connection)
