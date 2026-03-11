@@ -6,13 +6,33 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function deviceIdFromRawPublicKey(rawPk) {
+  return crypto.createHash("sha256").update(rawPk).digest("hex");
+}
+
+// Build the v2 pipe-delimited payload that must be signed with the device's Ed25519 key
+function buildDeviceAuthPayloadV2({ deviceId, clientId, clientMode, role, scopes, signedAtMs, token, nonce }) {
+  const scopesStr = scopes.join(",");
+  return `v2|${deviceId}|${clientId}|${clientMode}|${role}|${scopesStr}|${signedAtMs}|${token}|${nonce}`;
+}
+
 export class OpenClawGatewayClient {
   constructor({ gatewayUrl, token }) {
     this.gatewayUrl = gatewayUrl;
     this.token = token;
 
+    // Generate a persistent Ed25519 key pair for device authentication.
+    // The gateway may require a signed device payload even when using token auth.
+    const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
+    this._privateKey = privateKey;
+    // Extract the raw 32-byte public key from the SPKI DER encoding
+    const spkiDer = publicKey.export({ type: "spki", format: "der" });
+    this._rawPublicKey = spkiDer.subarray(spkiDer.length - 32);
+    this._deviceId = deviceIdFromRawPublicKey(this._rawPublicKey);
+
     this.ws = null;
     this.ready = false;
+    this.connectError = null; // Set when connect is rejected by the gateway
     this.pending = new Map(); // reqId -> { resolve, reject, chunks, done }
     this.messageId = 1;
     this.lastChatReqId = null; // Track latest chat request for event routing
@@ -27,6 +47,7 @@ export class OpenClawGatewayClient {
     }
 
     this.ready = false;
+    this.connectError = null;
 
     this.ws = new WebSocket(this.gatewayUrl);
 
@@ -39,13 +60,22 @@ export class OpenClawGatewayClient {
         this.pending.delete(id);
       }
     });
-    this.ws.on("error", () => {
+    this.ws.on("error", (err) => {
       this.ready = false;
+      if (!this.connectError) {
+        this.connectError = err;
+      }
+      // Also reject any requests that are already pending
+      for (const [id, p] of this.pending.entries()) {
+        p.reject(err);
+        this.pending.delete(id);
+      }
     });
 
-    // Wait until ready
+    // Wait until ready or an error is received
     const start = Date.now();
     while (!this.ready) {
+      if (this.connectError) throw this.connectError;
       if (Date.now() - start > 10_000) throw new Error("Gateway connect timeout");
       await sleep(50);
     }
@@ -66,34 +96,71 @@ export class OpenClawGatewayClient {
     // Debug logging
     console.log("[gateway] <=", msg.type, msg.event || msg.id || "", msg.ok === false ? msg.error : "");
 
-    // 1) Challenge -> send simplified connect (token-only, no device)
+    // 1) Challenge -> send connect with device authentication
     if (msg.type === "event" && msg.event === "connect.challenge") {
+      const nonce = msg.payload?.nonce;
+      const signedAt = Date.now();
+      const clientId = "cli";
+      const clientMode = "cli";
+      const role = "operator";
+      const scopes = ["operator.read", "operator.write", "operator.admin"];
+
+      const connectParams = {
+        minProtocol: 3,
+        maxProtocol: 3,
+        client: { id: clientId, version: "1.0.0", platform: "linux", mode: clientMode },
+        role,
+        scopes,
+        caps: [],
+        commands: [],
+        permissions: {},
+        auth: { token: this.token },
+        locale: "en-US",
+        userAgent: "backend-gateway-client",
+      };
+
+      // Include signed device payload when the gateway issues a nonce challenge.
+      // This satisfies gateways that require device pairing even with token auth.
+      if (nonce) {
+        const payload = buildDeviceAuthPayloadV2({
+          deviceId: this._deviceId,
+          clientId,
+          clientMode,
+          role,
+          scopes,
+          signedAtMs: signedAt,
+          token: this.token,
+          nonce,
+        });
+        const signature = crypto.sign(null, Buffer.from(payload, "utf8"), this._privateKey);
+        connectParams.device = {
+          id: this._deviceId,
+          publicKey: this._rawPublicKey.toString("base64"),
+          signature: signature.toString("base64"),
+          signedAt,
+          nonce,
+        };
+      }
+
       this._send({
         type: "req",
         id: "c1",
         method: "connect",
-        params: {
-          minProtocol: 3,
-          maxProtocol: 3,
-          client: { id: "cli", version: "1.0.0", platform: "linux", mode: "cli" },
-          role: "operator",
-          scopes: ["operator.read", "operator.write", "operator.admin"],
-          caps: [],
-          commands: [],
-          permissions: {},
-          auth: { token: this.token },
-          locale: "en-US",
-          userAgent: "backend-gateway-client",
-          // Omit device field to skip device pairing requirement
-        },
+        params: connectParams,
       });
 
       return;
     }
 
-    // 2) Connect response -> mark ready
+    // 2) Connect response -> mark ready or store error for immediate propagation
     if (msg.type === "res" && msg.id === "c1") {
-      if (msg.ok) this.ready = true;
+      if (msg.ok) {
+        this.ready = true;
+      } else {
+        this.connectError = new Error(
+          msg.error?.message || "Gateway connection rejected (pairing required)"
+        );
+      }
       return;
     }
 
@@ -205,5 +272,6 @@ export class OpenClawGatewayClient {
       this.ws = null;
     }
     this.ready = false;
+    this.connectError = null;
   }
 }

@@ -2075,6 +2075,43 @@ function getGatewayClient() {
   return gatewayClient;
 }
 
+/**
+ * Detect whether the user's message is requesting a ClawHub skill installation
+ * and extract the skill slug.  Returns null if no install intent is found.
+ *
+ * Supported patterns (case-insensitive):
+ *   "install <slug> skill"
+ *   "install the <slug> skill"
+ *   "install <slug>"
+ *   "can you install <slug>"
+ *   "please install <slug>"
+ */
+function detectSkillInstallIntent(message) {
+  if (!message || typeof message !== "string") return null;
+
+  const patterns = [
+    // "install [the] <slug> [skill]"
+    /\binstall\s+(?:the\s+)?([a-z0-9](?:[a-z0-9_-]*[a-z0-9])?)\s+skill\b/i,
+    // "install [the] <slug>" at end of sentence
+    /\binstall\s+(?:the\s+)?([a-z0-9](?:[a-z0-9_-]*[a-z0-9])?)(?:\s*[.!?]?\s*$)/i,
+    // "install skill <slug>"
+    /\binstall\s+skill\s+([a-z0-9](?:[a-z0-9_-]*[a-z0-9])?)/i,
+  ];
+
+  for (const re of patterns) {
+    const m = message.match(re);
+    if (m && m[1]) {
+      // Normalise to lowercase slug and exclude common stop-words
+      const slug = m[1].toLowerCase();
+      if (!["a", "an", "the", "this", "that", "it", "skill"].includes(slug)) {
+        return slug;
+      }
+    }
+  }
+
+  return null;
+}
+
 // POST /api/chat - Send message to agent and get response
 app.post("/api/chat", requireApiKey, async (req, res) => {
   try {
@@ -2101,6 +2138,39 @@ app.post("/api/chat", requireApiKey, async (req, res) => {
     // Set request timeout
     req.setTimeout(120000); // 2 minutes
     res.setTimeout(120000);
+
+    // Detect skill installation intent before forwarding to the AI.
+    // When the user asks to install a skill, trigger the actual installation
+    // and include the result alongside the AI's conversational response.
+    const installSlug = detectSkillInstallIntent(message);
+    let skillInstallResult = null;
+    if (installSlug) {
+      console.log(`[api/chat] detected skill install intent: ${installSlug}`);
+      const CLAWHUB_CLI = process.env.CLAWHUB_CLI?.trim() || "clawhub";
+      const installArgs = ["install", installSlug, "--workdir", WORKSPACE_DIR, "--no-input"];
+      try {
+        const installRun = await runCmd(CLAWHUB_CLI, installArgs);
+        const installOutput = installRun.output || "";
+        const installSuccess =
+          installRun.code === 0 || installOutput.toLowerCase().includes("installed");
+        skillInstallResult = {
+          slug: installSlug,
+          ok: installSuccess,
+          output: installOutput,
+          exitCode: installRun.code,
+        };
+        console.log(
+          `[api/chat] skill install ${installSlug}: ${installSuccess ? "success" : "failed"}`
+        );
+      } catch (installError) {
+        skillInstallResult = {
+          slug: installSlug,
+          ok: false,
+          error: installError.message,
+        };
+        console.error(`[api/chat] skill install error: ${installError.message}`);
+      }
+    }
     
     try {
       const client = getGatewayClient();
@@ -2114,21 +2184,38 @@ app.post("/api/chat", requireApiKey, async (req, res) => {
         text: message
       });
       
-      res.json({
+      const result = {
         ok: true,
         agentId,
         sessionKey: finalSessionKey,
         response,
         timestamp: new Date().toISOString()
-      });
+      };
+
+      // Include skill installation result when a skill install was triggered
+      if (skillInstallResult) {
+        result.skillInstall = skillInstallResult;
+      }
+
+      res.json(result);
     } catch (chatError) {
-      // If connection failed, reset client and try once more
-      if (chatError.message.includes('timeout') || chatError.message.includes('closed')) {
+      // If connection failed due to pairing/auth issues, reset the client so the
+      // next request will attempt a fresh connection with device authentication.
+      const isPairingError =
+        chatError.message.toLowerCase().includes("pairing") ||
+        chatError.message.toLowerCase().includes("device") ||
+        chatError.message.toLowerCase().includes("rejected");
+      if (
+        chatError.message.includes("timeout") ||
+        chatError.message.includes("closed") ||
+        isPairingError
+      ) {
         gatewayClient = null; // Reset for next request
         return res.status(504).json({
           ok: false,
           error: 'Gateway timeout or connection closed',
-          message: chatError.message
+          message: chatError.message,
+          ...(skillInstallResult && { skillInstall: skillInstallResult }),
         });
       }
       throw chatError;
