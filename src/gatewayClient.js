@@ -1,21 +1,57 @@
 // gatewayClient.js
 import WebSocket from "ws";
 import crypto from "crypto";
+import fs from "fs";
+import path from "path";
+import os from "os";
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// Generate or load a persistent device ID for Gateway pairing
+function getOrCreateDeviceId(stateDir) {
+  const deviceIdPath = path.join(stateDir, "device.id");
+  
+  try {
+    if (fs.existsSync(deviceIdPath)) {
+      const deviceId = fs.readFileSync(deviceIdPath, "utf8").trim();
+      if (deviceId) {
+        console.log(`[gateway] Using existing device ID: ${deviceId.slice(0, 12)}...`);
+        return deviceId;
+      }
+    }
+  } catch (err) {
+    console.warn(`[gateway] Failed to read device ID: ${err.message}`);
+  }
+  
+  // Generate new device ID
+  const deviceId = crypto.randomBytes(16).toString("hex");
+  
+  try {
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(deviceIdPath, deviceId);
+    console.log(`[gateway] Generated new device ID: ${deviceId.slice(0, 12)}...`);
+  } catch (err) {
+    console.error(`[gateway] Failed to persist device ID: ${err.message}`);
+  }
+  
+  return deviceId;
+}
+
 export class OpenClawGatewayClient {
-  constructor({ gatewayUrl, token }) {
+  constructor({ gatewayUrl, token, stateDir }) {
     this.gatewayUrl = gatewayUrl;
     this.token = token;
+    this.stateDir = stateDir || process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), ".openclaw");
+    this.deviceId = getOrCreateDeviceId(this.stateDir);
 
     this.ws = null;
     this.ready = false;
     this.pending = new Map(); // reqId -> { resolve, reject, chunks, done }
     this.messageId = 1;
     this.lastChatReqId = null; // Track latest chat request for event routing
+    this.pairingRequired = false; // Track if device pairing is needed
   }
 
   async connect() {
@@ -66,7 +102,7 @@ export class OpenClawGatewayClient {
     // Debug logging
     console.log("[gateway] <=", msg.type, msg.event || msg.id || "", msg.ok === false ? msg.error : "");
 
-    // 1) Challenge -> send simplified connect (token-only, no device)
+    // 1) Challenge -> send connect with device pairing for privileged operations
     if (msg.type === "event" && msg.event === "connect.challenge") {
       this._send({
         type: "req",
@@ -84,16 +120,34 @@ export class OpenClawGatewayClient {
           auth: { token: this.token },
           locale: "en-US",
           userAgent: "backend-gateway-client",
-          // Omit device field to skip device pairing requirement
+          // Include device ID for pairing support (required for privileged ops like skill install)
+          device: {
+            id: this.deviceId,
+            name: `openclaw-agent-${this.deviceId.slice(0, 8)}`,
+            type: "node",
+            platform: "linux"
+          }
         },
       });
 
       return;
     }
 
-    // 2) Connect response -> mark ready
+    // 2) Connect response -> mark ready or detect pairing requirement
     if (msg.type === "res" && msg.id === "c1") {
-      if (msg.ok) this.ready = true;
+      if (msg.ok) {
+        this.ready = true;
+        this.pairingRequired = false;
+        console.log("[gateway] Connected successfully");
+      } else {
+        // Check if pairing is required
+        const errorMsg = msg.error?.message || "";
+        if (errorMsg.includes("pairing") || errorMsg.includes("1008")) {
+          this.pairingRequired = true;
+          console.warn(`[gateway] Device pairing required for device ID: ${this.deviceId}`);
+          console.warn(`[gateway] Approve device via: openclaw devices list && openclaw devices approve <requestId>`);
+        }
+      }
       return;
     }
 

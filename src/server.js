@@ -1687,6 +1687,37 @@ app.post("/api/devices/approve", requireApiKey, async (req, res) => {
   }
 });
 
+// GET /api/devices/status - Check device pairing status for this instance
+app.get("/api/devices/status", requireApiKey, async (_req, res) => {
+  try {
+    const client = getGatewayClient();
+    const deviceIdPath = path.join(STATE_DIR, "device.id");
+    
+    res.json({
+      ok: true,
+      deviceId: client.deviceId,
+      deviceIdPersisted: fs.existsSync(deviceIdPath),
+      pairingRequired: client.pairingRequired || false,
+      stateDir: STATE_DIR,
+      help: {
+        message: client.pairingRequired 
+          ? "Device pairing is required. Use 'openclaw devices list' to find the request ID, then 'openclaw devices approve <requestId>' to approve."
+          : "Device pairing status OK",
+        commands: [
+          "openclaw devices list",
+          "openclaw devices approve <requestId>"
+        ],
+        apiEndpoints: {
+          listDevices: "GET /api/devices",
+          approveDevice: "POST /api/devices/approve {requestId: \"...\"}"
+        }
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 // ===== SKILL MANAGEMENT API ROUTES =====
 
 // GET /api/skills - List installed skills
@@ -1937,6 +1968,9 @@ app.post("/api/skills/install", requireApiKey, async (req, res) => {
       const result = await runCmd(CLAWHUB_CLI, args);
       const output = result.output || '';
       const isRateLimit = output.toLowerCase().includes('rate limit');
+      const isPairingRequired = output.includes('1008') || 
+                                output.toLowerCase().includes('pairing required') ||
+                                output.toLowerCase().includes('disconnected') && output.toLowerCase().includes('pairing');
       const success = result.code === 0 || output.toLowerCase().includes('installed');
       
       if (success) {
@@ -1947,6 +1981,35 @@ app.post("/api/skills/install", requireApiKey, async (req, res) => {
           output: result.output,
           exitCode: result.code,
           attempts: attempt + 1
+        });
+      }
+      
+      // Handle pairing required error specifically
+      if (isPairingRequired) {
+        const client = getGatewayClient();
+        return res.status(403).json({
+          ok: false,
+          slug,
+          error: 'Device pairing required',
+          message: 'Skill installation requires device approval. Please approve the device pairing request.',
+          deviceId: client.deviceId,
+          instructions: {
+            cli: [
+              'Run on gateway host:',
+              '  openclaw devices list',
+              '  openclaw devices approve <requestId>'
+            ],
+            api: [
+              'Use the API endpoints:',
+              '  GET /api/devices - List pending devices',
+              '  POST /api/devices/approve - Approve device'
+            ],
+            ui: [
+              'Or use the web UI:',
+              '  Navigate to /setup',
+              '  Look for device approval section'
+            ]
+          }
         });
       }
       
@@ -2069,7 +2132,8 @@ function getGatewayClient() {
     const gatewayUrl = `ws://${INTERNAL_GATEWAY_HOST}:${INTERNAL_GATEWAY_PORT}/gateway?token=${OPENCLAW_GATEWAY_TOKEN}`;
     gatewayClient = new OpenClawGatewayClient({
       gatewayUrl,
-      token: OPENCLAW_GATEWAY_TOKEN
+      token: OPENCLAW_GATEWAY_TOKEN,
+      stateDir: STATE_DIR
     });
   }
   return gatewayClient;
