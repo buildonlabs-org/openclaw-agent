@@ -85,6 +85,8 @@ export class OpenClawGatewayClient {
     if (this.ws) {
       try { this.ws.close(); } catch {}
     }
+
+    this.ready = false;
     this.pairingRequired = false;
     this.connectError = null;
 

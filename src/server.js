@@ -2064,9 +2064,9 @@ app.delete("/api/skills/:slug", requireApiKey, async (req, res) => {
 // Singleton gateway client instance (reuses WebSocket connection)
 let gatewayClient = null;
 
-async function autoApproveGatewayDevice(deviceId) {
+async function autoApproveGatewayDevice(deviceId, requestId) {
   try {
-    console.log(`[gateway] auto-approving device ${deviceId}...`);
+    console.log(`[gateway] auto-approving device ${deviceId}${requestId ? ` (request ${requestId})` : ''}...`);
     const approveResult = await runCmd(OPENCLAW_CLI, ["devices", "approve", deviceId]);
     if (approveResult.code === 0) {
       console.log(`[gateway] device ${deviceId} approved successfully`);
@@ -2096,9 +2096,9 @@ async function getGatewayClient() {
   });
   
   // Set up auto-approval callback for device pairing
-  gatewayClient.onPairingRequired = async (deviceId) => {
+  gatewayClient.onPairingRequired = async (deviceId, requestId) => {
     console.log(`[gateway] pairing required for device ${deviceId}, auto-approving...`);
-    await autoApproveGatewayDevice(deviceId);
+    await autoApproveGatewayDevice(deviceId, requestId);
   };
   
   // Try to connect with retry logic for pairing
@@ -2117,8 +2117,8 @@ async function getGatewayClient() {
                             connectError.message.includes('1008');
       
       if (isPairingError && attempts < maxAttempts) {
-        console.log(`[gateway-client] connection attempt ${attempts} failed (pairing issue), retrying in 2s...`);
-        await sleep(2000);
+        console.log(`[gateway-client] connection attempt ${attempts} failed (pairing issue), retrying in 5s...`);
+        await sleep(5000); // Give approval time to complete
         
         // Reset client for retry
         gatewayClient.close();
@@ -2127,8 +2127,8 @@ async function getGatewayClient() {
           token: OPENCLAW_GATEWAY_TOKEN,
           keyPath
         });
-        gatewayClient.onPairingRequired = async (deviceId) => {
-          await autoApproveGatewayDevice(deviceId);
+        gatewayClient.onPairingRequired = async (deviceId, requestId) => {
+          await autoApproveGatewayDevice(deviceId, requestId);
         };
       } else {
         throw connectError;
