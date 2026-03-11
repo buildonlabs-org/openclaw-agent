@@ -2469,6 +2469,22 @@ const server = app.listen(PORT, () => {
   console.log(`[wrapper] setup wizard: http://localhost:${PORT}/setup`);
   console.log(`[wrapper] configured: ${isConfigured()}`);
   console.log(`[wrapper] gateway token: ${OPENCLAW_GATEWAY_TOKEN.slice(0, 12)}...`);
+  
+  // Show device ID information
+  const deviceIdPath = path.join(STATE_DIR, "device.id");
+  if (fs.existsSync(deviceIdPath)) {
+    try {
+      const deviceId = fs.readFileSync(deviceIdPath, "utf8").trim();
+      console.log(`[wrapper] ═══════════════════════════════════════════════════════════`);
+      console.log(`[wrapper] Device ID (for pairing): ${deviceId}`);
+      console.log(`[wrapper] Device ID persisted: ${deviceIdPath}`);
+      console.log(`[wrapper] ═══════════════════════════════════════════════════════════`);
+    } catch (err) {
+      console.warn(`[wrapper] Could not read device ID: ${err.message}`);
+    }
+  } else {
+    console.log(`[wrapper] Device ID will be generated on first Gateway connection`);
+  }
 
   if (isConfigured()) {
     (async () => {

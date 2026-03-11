@@ -17,7 +17,9 @@ function getOrCreateDeviceId(stateDir) {
     if (fs.existsSync(deviceIdPath)) {
       const deviceId = fs.readFileSync(deviceIdPath, "utf8").trim();
       if (deviceId) {
-        console.log(`[gateway] Using existing device ID: ${deviceId.slice(0, 12)}...`);
+        console.log(`[gateway] ═══════════════════════════════════════════════════════════`);
+        console.log(`[gateway] Using existing device ID: ${deviceId}`);
+        console.log(`[gateway] ═══════════════════════════════════════════════════════════`);
         return deviceId;
       }
     }
@@ -31,7 +33,10 @@ function getOrCreateDeviceId(stateDir) {
   try {
     fs.mkdirSync(stateDir, { recursive: true });
     fs.writeFileSync(deviceIdPath, deviceId);
-    console.log(`[gateway] Generated new device ID: ${deviceId.slice(0, 12)}...`);
+    console.log(`[gateway] ═══════════════════════════════════════════════════════════`);
+    console.log(`[gateway] Generated NEW device ID: ${deviceId}`);
+    console.log(`[gateway] ⚠️  DEVICE PAIRING WILL BE REQUIRED`);
+    console.log(`[gateway] ═══════════════════════════════════════════════════════════`);
   } catch (err) {
     console.error(`[gateway] Failed to persist device ID: ${err.message}`);
   }
@@ -63,20 +68,36 @@ export class OpenClawGatewayClient {
     }
 
     this.ready = false;
+    console.log(`[gateway] Connecting to Gateway with device ID: ${this.deviceId}`);
 
     this.ws = new WebSocket(this.gatewayUrl);
 
+    this.ws.on("open", () => {
+      console.log(`[gateway] WebSocket connection opened, waiting for challenge...`);
+    });
+
     this.ws.on("message", (data) => this._onMessage(data));
+    
     this.ws.on("close", (code, reason) => {
+      const reasonStr = reason?.toString() || "";
+      console.warn(`[gateway] ═══════════════════════════════════════════════════════════`);
+      console.warn(`[gateway] WebSocket CLOSED - Code: ${code}, Reason: ${reasonStr || '(none)'}`);
+      
       this.ready = false;
       
       // Detect pairing requirement from close code 1008
-      const reasonStr = reason?.toString() || "";
       if (code === 1008 || reasonStr.includes("pairing") || reasonStr.includes("connect failed")) {
         this.pairingRequired = true;
-        console.warn(`[gateway] Connection closed (${code}): ${reasonStr}`);
-        console.warn(`[gateway] Device pairing required for device ID: ${this.deviceId}`);
-        console.warn(`[gateway] Run: openclaw devices list && openclaw devices approve <requestId>`);
+        console.warn(`[gateway] ⚠️  DEVICE PAIRING REQUIRED`);
+        console.warn(`[gateway] Device ID: ${this.deviceId}`);
+        console.warn(`[gateway] `);
+        console.warn(`[gateway] To approve this device:`);
+        console.warn(`[gateway]   1. List pending devices: openclaw devices list`);
+        console.warn(`[gateway]   2. Approve device: openclaw devices approve <requestId>`);
+        console.warn(`[gateway]   3. Or use API: GET /api/devices then POST /api/devices/approve`);
+        console.warn(`[gateway] ═══════════════════════════════════════════════════════════`);
+      } else {
+        console.warn(`[gateway] ═══════════════════════════════════════════════════════════`);
       }
       
       // fail all pending
@@ -85,6 +106,7 @@ export class OpenClawGatewayClient {
         this.pending.delete(id);
       }
     });
+    
     this.ws.on("error", (err) => {
       this.ready = false;
       console.error(`[gateway] WebSocket error:`, err.message);
@@ -94,6 +116,7 @@ export class OpenClawGatewayClient {
     const start = Date.now();
     while (!this.ready) {
       if (Date.now() - start > 10_000) {
+        console.error(`[gateway] Connection timeout after 10s`);
         // If pairing is required, throw a more helpful error
         if (this.pairingRequired) {
           throw new Error(`Gateway connection failed: Device pairing required. Device ID: ${this.deviceId}. Run: openclaw devices list && openclaw devices approve <requestId>`);
@@ -102,6 +125,8 @@ export class OpenClawGatewayClient {
       }
       await sleep(50);
     }
+    
+    console.log(`[gateway] ✓ Connected successfully`);
   }
 
   _send(obj) {
@@ -121,6 +146,8 @@ export class OpenClawGatewayClient {
 
     // 1) Challenge -> send connect with device pairing for privileged operations
     if (msg.type === "event" && msg.event === "connect.challenge") {
+      console.log(`[gateway] Received challenge, sending connect with device: ${this.deviceId.slice(0, 8)}...`);
+      
       this._send({
         type: "req",
         id: "c1",
