@@ -1,8 +1,6 @@
 // gatewayClient.js
 import WebSocket from "ws";
 import crypto from "crypto";
-import fs from "fs";
-import path from "path";
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -14,77 +12,11 @@ export class OpenClawGatewayClient {
     this.token = token;
     this.keyPath = keyPath;
 
-    // Load or generate device identity
-    this._loadOrGenerateDeviceIdentity();
-
-    // ADDED - Track connection states
     this.ws = null;
     this.ready = false;
-    this.pairingRequired = false; // Track pairing state
-    this.connectError = null; // Store connection errors
     this.pending = new Map(); // reqId -> { resolve, reject, chunks, done }
     this.messageId = 1;
     this.lastChatReqId = null; // Track latest chat request for event routing
-  }
-
-  _loadOrGenerateDeviceIdentity() {
-    let deviceData = null;
-
-    // Try to load existing device identity
-    if (this.keyPath && fs.existsSync(this.keyPath)) {
-      try {
-        const fileContent = fs.readFileSync(this.keyPath, "utf8");
-        deviceData = JSON.parse(fileContent);
-        console.log("[gateway-client] loaded persistent device identity");
-      } catch (err) {
-        console.warn("[gateway-client] failed to load device identity, generating new one:", err.message);
-      }
-    }
-
-    // Generate new identity if needed
-    if (!deviceData) {
-      const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
-      const spkiDer = publicKey.export({ type: "spki", format: "der" });
-      const rawPublicKey = spkiDer.subarray(spkiDer.length - 32);
-      const rawPublicKeyB64 = rawPublicKey.toString("base64");
-      const deviceId = crypto.createHash("sha256").update(rawPublicKey).digest("hex");
-
-      deviceData = {
-        privateKey: privateKey.export({ type: "pkcs8", format: "pem" }),
-        publicKey: rawPublicKeyB64,
-        deviceId
-      };
-
-      // Save to file if keyPath provided
-      if (this.keyPath) {
-        try {
-          const dir = path.dirname(this.keyPath);
-          fs.mkdirSync(dir, { recursive: true });
-          fs.writeFileSync(this.keyPath, JSON.stringify(deviceData, null, 2), "utf8");
-          console.log("[gateway-client] saved device identity to", this.keyPath);
-        } catch (err) {
-          console.warn("[gateway-client] failed to save device identity:", err.message);
-        }
-      }
-    }
-
-    // Import keys
-    this.privateKey = crypto.createPrivateKey({
-      key: deviceData.privateKey,
-      format: "pem",
-      type: "pkcs8"
-    });
-
-    this.rawPublicKeyB64 = deviceData.publicKey;
-    this.deviceId = deviceData.deviceId;
-    this.rawPublicKey = Buffer.from(this.rawPublicKeyB64, "base64");
-
-    console.log("[gateway-client] device ID:", this.deviceId);
-  }
-
-  buildDeviceAuthPayloadV2({ nonce, signedAtMs, clientId, clientMode, role, scopes }) {
-    const scopesStr = scopes.join(",");
-    return `v2|${this.deviceId}|${clientId}|${clientMode}|${role}|${scopesStr}|${signedAtMs}|${this.token}|${nonce}`;
   }
 
   async connect() {
@@ -96,8 +28,6 @@ export class OpenClawGatewayClient {
     }
 
     this.ready = false;
-    this.pairingRequired = false;
-    this.connectError = null;
 
     this.ws = new WebSocket(this.gatewayUrl);
 
@@ -114,19 +44,11 @@ export class OpenClawGatewayClient {
       this.ready = false;
     });
 
-    // Wait until ready or error
+    // Wait until ready
     const start = Date.now();
-    while (!this.ready && !this.pairingRequired && !this.connectError) {
+    while (!this.ready) {
       if (Date.now() - start > 15_000) throw new Error("Gateway connect timeout");
       await sleep(50);
-    }
-
-    // Throw appropriate error if connection failed
-    if (this.pairingRequired) {
-      throw new Error("pairing required");
-    }
-    if (this.connectError) {
-      throw new Error(`Gateway connect failed: ${this.connectError}`);
     }
   }
 
@@ -145,27 +67,8 @@ export class OpenClawGatewayClient {
     // Debug logging
     console.log("[gateway] <=", msg.type, msg.event || msg.id || "", msg.ok === false ? msg.error : "");
 
-    // 1) Challenge -> send signed connect with device authentication
+    // 1) Challenge -> send token-only connect (no device pairing required)
     if (msg.type === "event" && msg.event === "connect.challenge") {
-      const nonce = msg.payload?.nonce;
-      const signedAt = Date.now();
-
-      const clientId = "cli";
-      const clientMode = "cli";
-      const role = "operator";
-      const scopes = ["operator.read", "operator.write", "operator.admin"];
-
-      const payload = this.buildDeviceAuthPayloadV2({
-        nonce,
-        signedAtMs: signedAt,
-        clientId,
-        clientMode,
-        role,
-        scopes,
-      });
-
-      const signature = crypto.sign(null, Buffer.from(payload, "utf8"), this.privateKey);
-
       this._send({
         type: "req",
         id: "c1",
@@ -173,54 +76,30 @@ export class OpenClawGatewayClient {
         params: {
           minProtocol: 3,
           maxProtocol: 3,
-          client: { id: clientId, version: "1.0.0", platform: "linux", mode: clientMode },
-          role,
-          scopes,
+          client: { id: "cli", version: "1.0.0", platform: "linux", mode: "cli" },
+          role: "operator",
+          scopes: ["operator.read", "operator.write", "operator.admin"],
           caps: [],
           commands: [],
           permissions: {},
           auth: { token: this.token },
           locale: "en-US",
           userAgent: "backend-gateway-client",
-          device: {
-            id: this.deviceId,
-            publicKey: this.rawPublicKeyB64,
-            signature: signature.toString("base64"),
-            signedAt,
-            nonce,
-          },
+          // Omit device field to skip device pairing requirement
         },
       });
 
       return;
     }
 
-    // 2) Connect response -> mark ready or handle pairing
+    // 2) Connect response -> mark ready
     if (msg.type === "res" && msg.id === "c1") {
       if (msg.ok) {
         this.ready = true;
-      } else if (msg.error?.code === "NOT_PAIRED" || msg.error?.details?.code === "PAIRING_REQUIRED") {
-        // Handle pairing requirement from connect response
-        this.pairingRequired = true;
-        console.log("[gateway-client] pairing required for device:", this.deviceId);
-        if (this.onPairingRequired) {
-          console.log("[gateway-client] triggering pairing callback...");
-          // Trigger callback asynchronously, don't block message processing
-          Promise.resolve().then(() => this.onPairingRequired(this.deviceId, msg.error?.details?.requestId));
-        }
       } else {
-        // Other error
+        // Connection error
         this.connectError = msg.error?.message || JSON.stringify(msg.error);
-      }
-      return;
-    }
-
-    // 2b) Device pairing requested event (alternative path)
-    if (msg.type === "event" && msg.event === "device.pair.requested") {
-      this.pairingRequired = true;
-      console.log("[gateway-client] device pairing requested via event:", this.deviceId);
-      if (this.onPairingRequired) {
-        Promise.resolve().then(() => this.onPairingRequired(this.deviceId));
+        console.error("[gateway-client] connect failed:", this.connectError);
       }
       return;
     }

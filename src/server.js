@@ -2064,25 +2064,6 @@ app.delete("/api/skills/:slug", requireApiKey, async (req, res) => {
 // Singleton gateway client instance (reuses WebSocket connection)
 let gatewayClient = null;
 
-// Auto-approve gateway device when pairing required
-async function autoApproveGatewayDevice(deviceId, requestId) {
-  try {
-    console.log(`[gateway] auto-approving device ${deviceId}${requestId ? ` (request ${requestId})` : ''}...`);
-    const approveResult = await runCmd(OPENCLAW_CLI, ["devices", "approve", deviceId]);
-    console.log(`[gateway] approval command output:`, approveResult);
-    if (approveResult.code === 0) {
-      console.log(`[gateway] device ${deviceId} approved successfully`);
-      return true;
-    } else {
-      console.error(`[gateway] device approval failed with code ${approveResult.code}: ${approveResult.output}`);
-      return false;
-    }
-  } catch (err) {
-    console.error(`[gateway] auto-approve failed: ${err.message}`);
-    return false;
-  }
-}
-
 async function getGatewayClient() {
   if (gatewayClient && gatewayClient.ready) {
     return gatewayClient;
@@ -2104,54 +2085,15 @@ async function getGatewayClient() {
     keyPath
   });
   
-  // Set up auto-approval callback for device pairing
-  gatewayClient.onPairingRequired = async (deviceId, requestId) => {
-    console.log(`[gateway] pairing required for device ${deviceId}, auto-approving...`);
-    await autoApproveGatewayDevice(deviceId, requestId);
-  };
-  
-  // Try to connect with retry logic for pairing
-  let attempts = 0;
-  const maxAttempts = 3;
-  
-  while (attempts < maxAttempts) {
-    try {
-      await gatewayClient.connect();
-      console.log("[gateway-client] connected successfully");
-      return gatewayClient;
-    } catch (connectError) {
-      attempts++;
-      const isPairingError = connectError.message.includes('pairing') || 
-                            connectError.message.includes('timeout') ||
-                            connectError.message.includes('1008');
-      
-      if (isPairingError && attempts < maxAttempts) {
-        console.log(`[gateway-client] connection attempt ${attempts} failed (pairing issue), retrying in 8s...`);
-        await sleep(8000); // Give approval time to complete and propagate
-        
-        // Reset client for retry
-        gatewayClient.close();
-        gatewayClient = new OpenClawGatewayClient({
-          gatewayUrl,
-          token: OPENCLAW_GATEWAY_TOKEN,
-          keyPath
-        });
-        gatewayClient.onPairingRequired = async (deviceId, requestId) => {
-          await autoApproveGatewayDevice(deviceId, requestId);
-        };
-      } else {
-        // Connection failed after retries, reset client
-        console.error(`[gateway-client] connection failed: ${connectError.message}`);
-        gatewayClient = null;
-        throw connectError;
-      }
-    }
+  try {
+    await gatewayClient.connect();
+    console.log("[gateway-client] connected successfully");
+    return gatewayClient;
+  } catch (connectError) {
+    console.error("[gateway-client] connection failed:", connectError.message);
+    gatewayClient = null;
+    throw connectError;
   }
-  
-  // All retries exhausted, reset client and throw
-  console.error(`[gateway-client] failed to connect after ${maxAttempts} attempts`);
-  gatewayClient = null;
-  throw new Error(`Failed to connect after ${maxAttempts} attempts`);
 }
 
 // POST /api/chat - Send message to agent and get response
@@ -2202,18 +2144,9 @@ app.post("/api/chat", requireApiKey, async (req, res) => {
       });
     } catch (chatError) {
       // If connection failed, reset client and let next request retry
-      if (chatError.message.includes('timeout') || 
-          chatError.message.includes('closed') || 
-          chatError.message.includes('pairing')) {
+      if (chatError.message.includes('timeout') || chatError.message.includes('closed')) {
         console.log('[gateway-client] resetting client due to error:', chatError.message);
         gatewayClient = null; // Reset for next request
-        if (chatError.message.includes('pairing')) {
-          return res.status(503).json({
-            ok: false,
-            error: 'Device pairing in progress, please retry in a few seconds',
-            message: chatError.message
-          });
-        }
         return res.status(504).json({
           ok: false,
           error: 'Gateway timeout or connection closed',
