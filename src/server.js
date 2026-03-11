@@ -2069,11 +2069,12 @@ async function autoApproveGatewayDevice(deviceId, requestId) {
   try {
     console.log(`[gateway] auto-approving device ${deviceId}${requestId ? ` (request ${requestId})` : ''}...`);
     const approveResult = await runCmd(OPENCLAW_CLI, ["devices", "approve", deviceId]);
+    console.log(`[gateway] approval command output:`, approveResult);
     if (approveResult.code === 0) {
       console.log(`[gateway] device ${deviceId} approved successfully`);
       return true;
     } else {
-      console.error(`[gateway] device approval failed: ${approveResult.output}`);
+      console.error(`[gateway] device approval failed with code ${approveResult.code}: ${approveResult.output}`);
       return false;
     }
   } catch (err) {
@@ -2083,8 +2084,15 @@ async function autoApproveGatewayDevice(deviceId, requestId) {
 }
 
 async function getGatewayClient() {
-  if (gatewayClient) {
+  if (gatewayClient && gatewayClient.ready) {
     return gatewayClient;
+  }
+  
+  // Reset if client exists but not ready
+  if (gatewayClient) {
+    console.log('[gateway-client] existing client not ready, resetting...');
+    gatewayClient.close();
+    gatewayClient = null;
   }
   
   const gatewayUrl = `ws://${INTERNAL_GATEWAY_HOST}:${INTERNAL_GATEWAY_PORT}/gateway?token=${OPENCLAW_GATEWAY_TOKEN}`;
@@ -2118,8 +2126,8 @@ async function getGatewayClient() {
                             connectError.message.includes('1008');
       
       if (isPairingError && attempts < maxAttempts) {
-        console.log(`[gateway-client] connection attempt ${attempts} failed (pairing issue), retrying in 5s...`);
-        await sleep(5000); // Give approval time to complete
+        console.log(`[gateway-client] connection attempt ${attempts} failed (pairing issue), retrying in 8s...`);
+        await sleep(8000); // Give approval time to complete and propagate
         
         // Reset client for retry
         gatewayClient.close();
@@ -2132,11 +2140,17 @@ async function getGatewayClient() {
           await autoApproveGatewayDevice(deviceId, requestId);
         };
       } else {
+        // Connection failed after retries, reset client
+        console.error(`[gateway-client] connection failed: ${connectError.message}`);
+        gatewayClient = null;
         throw connectError;
       }
     }
   }
   
+  // All retries exhausted, reset client and throw
+  console.error(`[gateway-client] failed to connect after ${maxAttempts} attempts`);
+  gatewayClient = null;
   throw new Error(`Failed to connect after ${maxAttempts} attempts`);
 }
 
@@ -2168,7 +2182,7 @@ app.post("/api/chat", requireApiKey, async (req, res) => {
     res.setTimeout(120000);
     
     try {
-      const client = getGatewayClient();
+      const client = await getGatewayClient();
       
       // Generate session key if not provided (per-user sessions)
       const finalSessionKey = sessionKey || `api-session-${Date.now()}`;
@@ -2187,9 +2201,19 @@ app.post("/api/chat", requireApiKey, async (req, res) => {
         timestamp: new Date().toISOString()
       });
     } catch (chatError) {
-      // If connection failed, reset client and try once more
-      if (chatError.message.includes('timeout') || chatError.message.includes('closed')) {
+      // If connection failed, reset client and let next request retry
+      if (chatError.message.includes('timeout') || 
+          chatError.message.includes('closed') || 
+          chatError.message.includes('pairing')) {
+        console.log('[gateway-client] resetting client due to error:', chatError.message);
         gatewayClient = null; // Reset for next request
+        if (chatError.message.includes('pairing')) {
+          return res.status(503).json({
+            ok: false,
+            error: 'Device pairing in progress, please retry in a few seconds',
+            message: chatError.message
+          });
+        }
         return res.status(504).json({
           ok: false,
           error: 'Gateway timeout or connection closed',
