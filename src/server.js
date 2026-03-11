@@ -2186,6 +2186,29 @@ app.post("/api/chat", requireApiKey, async (req, res) => {
         timestamp: new Date().toISOString()
       });
     } catch (chatError) {
+      // If connection failed due to pairing requirement
+      if (chatError.message.includes('Device pairing required')) {
+        const client = getGatewayClient();
+        return res.status(403).json({
+          ok: false,
+          error: 'Device pairing required',
+          message: 'Gateway connection requires device approval.',
+          deviceId: client.deviceId,
+          instructions: {
+            cli: [
+              'Run on gateway host:',
+              '  openclaw devices list',
+              '  openclaw devices approve <requestId>'
+            ],
+            api: [
+              'Use the API endpoints:',
+              '  GET /api/devices - List pending devices',
+              '  POST /api/devices/approve - Approve device'
+            ]
+          }
+        });
+      }
+      
       // If connection failed, reset client and try once more
       if (chatError.message.includes('timeout') || chatError.message.includes('closed')) {
         gatewayClient = null; // Reset for next request

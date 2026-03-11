@@ -67,22 +67,39 @@ export class OpenClawGatewayClient {
     this.ws = new WebSocket(this.gatewayUrl);
 
     this.ws.on("message", (data) => this._onMessage(data));
-    this.ws.on("close", () => {
+    this.ws.on("close", (code, reason) => {
       this.ready = false;
+      
+      // Detect pairing requirement from close code 1008
+      const reasonStr = reason?.toString() || "";
+      if (code === 1008 || reasonStr.includes("pairing") || reasonStr.includes("connect failed")) {
+        this.pairingRequired = true;
+        console.warn(`[gateway] Connection closed (${code}): ${reasonStr}`);
+        console.warn(`[gateway] Device pairing required for device ID: ${this.deviceId}`);
+        console.warn(`[gateway] Run: openclaw devices list && openclaw devices approve <requestId>`);
+      }
+      
       // fail all pending
       for (const [id, p] of this.pending.entries()) {
-        p.reject(new Error("gateway connection closed"));
+        p.reject(new Error(`gateway connection closed (${code}): ${reasonStr}`));
         this.pending.delete(id);
       }
     });
-    this.ws.on("error", () => {
+    this.ws.on("error", (err) => {
       this.ready = false;
+      console.error(`[gateway] WebSocket error:`, err.message);
     });
 
     // Wait until ready
     const start = Date.now();
     while (!this.ready) {
-      if (Date.now() - start > 10_000) throw new Error("Gateway connect timeout");
+      if (Date.now() - start > 10_000) {
+        // If pairing is required, throw a more helpful error
+        if (this.pairingRequired) {
+          throw new Error(`Gateway connection failed: Device pairing required. Device ID: ${this.deviceId}. Run: openclaw devices list && openclaw devices approve <requestId>`);
+        }
+        throw new Error("Gateway connect timeout");
+      }
       await sleep(50);
     }
   }
