@@ -1723,31 +1723,71 @@ app.get("/api/devices/status", requireApiKey, async (_req, res) => {
 // GET /api/skills - List installed skills
 app.get("/api/skills", requireApiKey, async (_req, res) => {
   try {
-    const CLAWHUB_CLI = process.env.CLAWHUB_CLI?.trim() || "clawhub";
-    const result = await runCmd(CLAWHUB_CLI, ["list", "--workdir", WORKSPACE_DIR]);
-    
-    // Parse the output - format is typically slug@version or JSON
+    const skillsDir = path.join(WORKSPACE_DIR, 'skills');
     const skills = [];
-    const lines = result.output.trim().split('\n');
     
-    for (const line of lines) {
-      if (!line.trim() || line.startsWith('#')) continue;
-      
-      // Skip common "no skills" messages
-      if (line.toLowerCase().includes('no installed skills') || 
-          line.toLowerCase().includes('no skills found')) {
-        continue;
+    // Try reading from filesystem directly (most reliable)
+    try {
+      if (fs.existsSync(skillsDir)) {
+        const entries = fs.readdirSync(skillsDir, { withFileTypes: true });
+        
+        for (const entry of entries) {
+          if (entry.isDirectory()) {
+            const skillPath = path.join(skillsDir, entry.name);
+            let version = 'unknown';
+            
+            // Try to read version from package.json or SKILL.md
+            try {
+              const pkgPath = path.join(skillPath, 'package.json');
+              if (fs.existsSync(pkgPath)) {
+                const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+                version = pkg.version || 'unknown';
+              }
+            } catch (err) {
+              // Ignore version read errors
+            }
+            
+            skills.push({
+              slug: entry.name,
+              version,
+              path: skillPath
+            });
+          }
+        }
       }
-      
-      // Parse format: skill-slug@1.0.0 or similar
-      // Must have @ symbol to be a valid skill entry
-      const match = line.match(/^([a-z0-9\-]+)@([0-9.]+)/i);
-      if (match) {
-        skills.push({
-          slug: match[1],
-          version: match[2],
-          raw: line.trim()
-        });
+    } catch (fsError) {
+      console.warn('[api/skills] Filesystem read failed:', fsError.message);
+    }
+    
+    // If no skills found via filesystem, try clawhub list as fallback
+    if (skills.length === 0) {
+      try {
+        const CLAWHUB_CLI = process.env.CLAWHUB_CLI?.trim() || "clawhub";
+        const result = await runCmd(CLAWHUB_CLI, ["list", "--workdir", WORKSPACE_DIR]);
+        
+        const lines = result.output.trim().split('\n');
+        
+        for (const line of lines) {
+          if (!line.trim() || line.startsWith('#')) continue;
+          
+          // Skip common "no skills" messages
+          if (line.toLowerCase().includes('no installed skills') || 
+              line.toLowerCase().includes('no skills found')) {
+            continue;
+          }
+          
+          // Parse format: skill-slug@1.0.0 or similar
+          const match = line.match(/^([a-z0-9\-]+)@?([0-9.]*)/i);
+          if (match && match[1]) {
+            skills.push({
+              slug: match[1],
+              version: match[2] || 'unknown',
+              raw: line.trim()
+            });
+          }
+        }
+      } catch (cmdError) {
+        console.warn('[api/skills] clawhub list failed:', cmdError.message);
       }
     }
     
@@ -1756,7 +1796,7 @@ app.get("/api/skills", requireApiKey, async (_req, res) => {
       skills,
       count: skills.length,
       workspaceDir: WORKSPACE_DIR,
-      skillsDir: path.join(WORKSPACE_DIR, 'skills')
+      skillsDir
     });
   } catch (error) {
     res.status(500).json({ 
@@ -1968,9 +2008,6 @@ app.post("/api/skills/install", requireApiKey, async (req, res) => {
       const result = await runCmd(CLAWHUB_CLI, args);
       const output = result.output || '';
       const isRateLimit = output.toLowerCase().includes('rate limit');
-      const isPairingRequired = output.includes('1008') || 
-                                output.toLowerCase().includes('pairing required') ||
-                                output.toLowerCase().includes('disconnected') && output.toLowerCase().includes('pairing');
       const success = result.code === 0 || output.toLowerCase().includes('installed');
       
       if (success) {
@@ -1981,35 +2018,6 @@ app.post("/api/skills/install", requireApiKey, async (req, res) => {
           output: result.output,
           exitCode: result.code,
           attempts: attempt + 1
-        });
-      }
-      
-      // Handle pairing required error specifically
-      if (isPairingRequired) {
-        const client = getGatewayClient();
-        return res.status(403).json({
-          ok: false,
-          slug,
-          error: 'Device pairing required',
-          message: 'Skill installation requires device approval. Please approve the device pairing request.',
-          deviceId: client.deviceId,
-          instructions: {
-            cli: [
-              'Run on gateway host:',
-              '  openclaw devices list',
-              '  openclaw devices approve <requestId>'
-            ],
-            api: [
-              'Use the API endpoints:',
-              '  GET /api/devices - List pending devices',
-              '  POST /api/devices/approve - Approve device'
-            ],
-            ui: [
-              'Or use the web UI:',
-              '  Navigate to /setup',
-              '  Look for device approval section'
-            ]
-          }
         });
       }
       
@@ -2186,29 +2194,6 @@ app.post("/api/chat", requireApiKey, async (req, res) => {
         timestamp: new Date().toISOString()
       });
     } catch (chatError) {
-      // If connection failed due to pairing requirement
-      if (chatError.message.includes('Device pairing required')) {
-        const client = getGatewayClient();
-        return res.status(403).json({
-          ok: false,
-          error: 'Device pairing required',
-          message: 'Gateway connection requires device approval.',
-          deviceId: client.deviceId,
-          instructions: {
-            cli: [
-              'Run on gateway host:',
-              '  openclaw devices list',
-              '  openclaw devices approve <requestId>'
-            ],
-            api: [
-              'Use the API endpoints:',
-              '  GET /api/devices - List pending devices',
-              '  POST /api/devices/approve - Approve device'
-            ]
-          }
-        });
-      }
-      
       // If connection failed, reset client and try once more
       if (chatError.message.includes('timeout') || chatError.message.includes('closed')) {
         gatewayClient = null; // Reset for next request
@@ -2469,22 +2454,6 @@ const server = app.listen(PORT, () => {
   console.log(`[wrapper] setup wizard: http://localhost:${PORT}/setup`);
   console.log(`[wrapper] configured: ${isConfigured()}`);
   console.log(`[wrapper] gateway token: ${OPENCLAW_GATEWAY_TOKEN.slice(0, 12)}...`);
-  
-  // Show device ID information
-  const deviceIdPath = path.join(STATE_DIR, "device.id");
-  if (fs.existsSync(deviceIdPath)) {
-    try {
-      const deviceId = fs.readFileSync(deviceIdPath, "utf8").trim();
-      console.log(`[wrapper] ═══════════════════════════════════════════════════════════`);
-      console.log(`[wrapper] Device ID (for pairing): ${deviceId}`);
-      console.log(`[wrapper] Device ID persisted: ${deviceIdPath}`);
-      console.log(`[wrapper] ═══════════════════════════════════════════════════════════`);
-    } catch (err) {
-      console.warn(`[wrapper] Could not read device ID: ${err.message}`);
-    }
-  } else {
-    console.log(`[wrapper] Device ID will be generated on first Gateway connection`);
-  }
 
   if (isConfigured()) {
     (async () => {
