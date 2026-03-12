@@ -1,21 +1,53 @@
 // gatewayClient.js
 import WebSocket from "ws";
 import crypto from "crypto";
+import fs from "fs";
+import path from "path";
+import os from "os";
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// Generate device ID for tracking (not used for pairing - pairing disabled)
+function getOrCreateDeviceId(stateDir) {
+  const deviceIdPath = path.join(stateDir, "device.id");
+  
+  try {
+    if (fs.existsSync(deviceIdPath)) {
+      const deviceId = fs.readFileSync(deviceIdPath, "utf8").trim();
+      if (deviceId) return deviceId;
+    }
+  } catch (err) {
+    // Ignore
+  }
+  
+  // Generate new device ID for tracking
+  const deviceId = crypto.randomBytes(16).toString("hex");
+  
+  try {
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(deviceIdPath, deviceId);
+  } catch (err) {
+    // Ignore
+  }
+  
+  return deviceId;
+}
+
 export class OpenClawGatewayClient {
-  constructor({ gatewayUrl, token }) {
+  constructor({ gatewayUrl, token, stateDir }) {
     this.gatewayUrl = gatewayUrl;
     this.token = token;
+    this.stateDir = stateDir || process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), ".openclaw");
+    this.deviceId = getOrCreateDeviceId(this.stateDir);
 
     this.ws = null;
     this.ready = false;
     this.pending = new Map(); // reqId -> { resolve, reject, chunks, done }
     this.messageId = 1;
     this.lastChatReqId = null; // Track latest chat request for event routing
+    this.pairingRequired = false; // Track if device pairing is needed
   }
 
   async connect() {
@@ -27,28 +59,51 @@ export class OpenClawGatewayClient {
     }
 
     this.ready = false;
+    console.log(`[gateway] Connecting to Gateway (device pairing disabled)`);
 
     this.ws = new WebSocket(this.gatewayUrl);
 
+    this.ws.on("open", () => {
+      console.log(`[gateway] WebSocket connection opened, waiting for challenge...`);
+    });
+
     this.ws.on("message", (data) => this._onMessage(data));
-    this.ws.on("close", () => {
+    
+    this.ws.on("close", (code, reason) => {
+      const reasonStr = reason?.toString() || "";
       this.ready = false;
+      
+      if (code !== 1000) {
+        console.warn(`[gateway] Connection closed - Code: ${code}, Reason: ${reasonStr || '(none)'}`);
+      }
+      
       // fail all pending
       for (const [id, p] of this.pending.entries()) {
-        p.reject(new Error("gateway connection closed"));
+        p.reject(new Error(`gateway connection closed (${code}): ${reasonStr}`));
         this.pending.delete(id);
       }
     });
-    this.ws.on("error", () => {
+    
+    this.ws.on("error", (err) => {
       this.ready = false;
+      console.error(`[gateway] WebSocket error:`, err.message);
     });
 
     // Wait until ready
     const start = Date.now();
     while (!this.ready) {
-      if (Date.now() - start > 10_000) throw new Error("Gateway connect timeout");
+      if (Date.now() - start > 10_000) {
+        console.error(`[gateway] Connection timeout after 10s`);
+        // If pairing is required, throw a more helpful error
+        if (this.pairingRequired) {
+          throw new Error(`Gateway connection failed: Device pairing required. Device ID: ${this.deviceId}. Run: openclaw devices list && openclaw devices approve <requestId>`);
+        }
+        throw new Error("Gateway connect timeout");
+      }
       await sleep(50);
     }
+    
+    console.log(`[gateway] ✓ Connected successfully`);
   }
 
   _send(obj) {
@@ -66,8 +121,10 @@ export class OpenClawGatewayClient {
     // Debug logging
     console.log("[gateway] <=", msg.type, msg.event || msg.id || "", msg.ok === false ? msg.error : "");
 
-    // 1) Challenge -> send simplified connect (token-only, no device)
+    // 1) Challenge -> send connect without device (simpler, chat works, skill install via API)
     if (msg.type === "event" && msg.event === "connect.challenge") {
+      console.log(`[gateway] Received challenge, sending connect (no device pairing)`);
+      
       this._send({
         type: "req",
         id: "c1",
@@ -84,16 +141,29 @@ export class OpenClawGatewayClient {
           auth: { token: this.token },
           locale: "en-US",
           userAgent: "backend-gateway-client",
-          // Omit device field to skip device pairing requirement
+          // Note: Device pairing disabled - skill installation from chat won't work
+          // Use API endpoint POST /api/skills/install instead
         },
       });
 
       return;
     }
 
-    // 2) Connect response -> mark ready
+    // 2) Connect response -> mark ready or detect pairing requirement
     if (msg.type === "res" && msg.id === "c1") {
-      if (msg.ok) this.ready = true;
+      if (msg.ok) {
+        this.ready = true;
+        this.pairingRequired = false;
+        console.log("[gateway] Connected successfully");
+      } else {
+        // Check if pairing is required
+        const errorMsg = msg.error?.message || "";
+        if (errorMsg.includes("pairing") || errorMsg.includes("1008")) {
+          this.pairingRequired = true;
+          console.warn(`[gateway] Device pairing required for device ID: ${this.deviceId}`);
+          console.warn(`[gateway] Approve device via: openclaw devices list && openclaw devices approve <requestId>`);
+        }
+      }
       return;
     }
 

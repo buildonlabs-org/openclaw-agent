@@ -1687,36 +1687,107 @@ app.post("/api/devices/approve", requireApiKey, async (req, res) => {
   }
 });
 
+// GET /api/devices/status - Check device pairing status for this instance
+app.get("/api/devices/status", requireApiKey, async (_req, res) => {
+  try {
+    const client = getGatewayClient();
+    const deviceIdPath = path.join(STATE_DIR, "device.id");
+    
+    res.json({
+      ok: true,
+      deviceId: client.deviceId,
+      deviceIdPersisted: fs.existsSync(deviceIdPath),
+      pairingRequired: client.pairingRequired || false,
+      stateDir: STATE_DIR,
+      help: {
+        message: client.pairingRequired 
+          ? "Device pairing is required. Use 'openclaw devices list' to find the request ID, then 'openclaw devices approve <requestId>' to approve."
+          : "Device pairing status OK",
+        commands: [
+          "openclaw devices list",
+          "openclaw devices approve <requestId>"
+        ],
+        apiEndpoints: {
+          listDevices: "GET /api/devices",
+          approveDevice: "POST /api/devices/approve {requestId: \"...\"}"
+        }
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 // ===== SKILL MANAGEMENT API ROUTES =====
 
 // GET /api/skills - List installed skills
 app.get("/api/skills", requireApiKey, async (_req, res) => {
   try {
-    const CLAWHUB_CLI = process.env.CLAWHUB_CLI?.trim() || "clawhub";
-    const result = await runCmd(CLAWHUB_CLI, ["list", "--workdir", WORKSPACE_DIR]);
-    
-    // Parse the output - format is typically slug@version or JSON
+    const skillsDir = path.join(WORKSPACE_DIR, 'skills');
     const skills = [];
-    const lines = result.output.trim().split('\n');
     
-    for (const line of lines) {
-      if (!line.trim() || line.startsWith('#')) continue;
-      
-      // Skip common "no skills" messages
-      if (line.toLowerCase().includes('no installed skills') || 
-          line.toLowerCase().includes('no skills found')) {
-        continue;
+    // Try reading from filesystem directly (most reliable)
+    try {
+      if (fs.existsSync(skillsDir)) {
+        const entries = fs.readdirSync(skillsDir, { withFileTypes: true });
+        
+        for (const entry of entries) {
+          if (entry.isDirectory()) {
+            const skillPath = path.join(skillsDir, entry.name);
+            let version = 'unknown';
+            
+            // Try to read version from package.json or SKILL.md
+            try {
+              const pkgPath = path.join(skillPath, 'package.json');
+              if (fs.existsSync(pkgPath)) {
+                const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+                version = pkg.version || 'unknown';
+              }
+            } catch (err) {
+              // Ignore version read errors
+            }
+            
+            skills.push({
+              slug: entry.name,
+              version,
+              path: skillPath
+            });
+          }
+        }
       }
-      
-      // Parse format: skill-slug@1.0.0 or similar
-      // Must have @ symbol to be a valid skill entry
-      const match = line.match(/^([a-z0-9\-]+)@([0-9.]+)/i);
-      if (match) {
-        skills.push({
-          slug: match[1],
-          version: match[2],
-          raw: line.trim()
-        });
+    } catch (fsError) {
+      console.warn('[api/skills] Filesystem read failed:', fsError.message);
+    }
+    
+    // If no skills found via filesystem, try clawhub list as fallback
+    if (skills.length === 0) {
+      try {
+        const CLAWHUB_CLI = process.env.CLAWHUB_CLI?.trim() || "clawhub";
+        const result = await runCmd(CLAWHUB_CLI, ["list", "--workdir", WORKSPACE_DIR]);
+        
+        const lines = result.output.trim().split('\n');
+        
+        for (const line of lines) {
+          if (!line.trim() || line.startsWith('#')) continue;
+          
+          // Skip common "no skills" messages
+          if (line.toLowerCase().includes('no installed skills') || 
+              line.toLowerCase().includes('no skills found')) {
+            continue;
+          }
+          
+          // Parse format: skill-slug@1.0.0 or similar
+          const match = line.match(/^([a-z0-9\-]+)@?([0-9.]*)/i);
+          if (match && match[1]) {
+            skills.push({
+              slug: match[1],
+              version: match[2] || 'unknown',
+              raw: line.trim()
+            });
+          }
+        }
+      } catch (cmdError) {
+        console.warn('[api/skills] clawhub list failed:', cmdError.message);
       }
     }
     
@@ -1725,7 +1796,7 @@ app.get("/api/skills", requireApiKey, async (_req, res) => {
       skills,
       count: skills.length,
       workspaceDir: WORKSPACE_DIR,
-      skillsDir: path.join(WORKSPACE_DIR, 'skills')
+      skillsDir
     });
   } catch (error) {
     res.status(500).json({ 
@@ -1928,9 +1999,9 @@ app.post("/api/skills/install", requireApiKey, async (req, res) => {
     
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       if (attempt > 0) {
-        // Exponential backoff: 2s, 4s, 8s
-        const delay = Math.pow(2, attempt) * 1000;
-        console.log(`[api/skills/install] Rate limited, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries + 1})`);
+        // Wait 2 minutes between retries to respect ClawHub rate limits
+        const delay = 120000; // 2 minutes
+        console.log(`[api/skills/install] Rate limited, retrying in ${delay / 1000}s (attempt ${attempt + 1}/${maxRetries + 1})`);
         await new Promise(resolve => setTimeout(resolve, delay));
       }
       
@@ -1968,7 +2039,7 @@ app.post("/api/skills/install", requireApiKey, async (req, res) => {
       output: lastError.output,
       exitCode: lastError.code,
       error: isRateLimit ? 'Rate limit exceeded' : 'Installation failed',
-      suggestion: isRateLimit ? 'Wait 1-2 minutes and retry, or use {"retry": true} in request body for automatic retries' : undefined
+      suggestion: isRateLimit ? 'Wait 2 minutes and retry, or use {"retry": true} in request body for automatic retries (waits 2 minutes between attempts)' : undefined
     });
   } catch (error) {
     res.status(500).json({ 
@@ -2059,6 +2130,35 @@ app.delete("/api/skills/:slug", requireApiKey, async (req, res) => {
   }
 });
 
+// POST /api/admin/restart - Restart the Gateway process
+app.post("/api/admin/restart", requireApiKey, async (req, res) => {
+  try {
+    console.log("[api/admin/restart] Restarting Gateway to load new skills...");
+    
+    // Send response immediately before restart
+    res.json({
+      ok: true,
+      message: "Gateway restart initiated. Skills will be reloaded.",
+      hint: "Gateway should be ready in 5-10 seconds. Use GET /health to check status."
+    });
+    
+    // Restart in background after response is sent
+    setImmediate(async () => {
+      try {
+        await restartGateway();
+        console.log("[api/admin/restart] Gateway restarted successfully");
+      } catch (err) {
+        console.error("[api/admin/restart] Error restarting Gateway:", err);
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message 
+    });
+  }
+});
+
 // ===== CHAT/MESSAGING API ROUTE =====
 
 // Singleton gateway client instance (reuses WebSocket connection)
@@ -2069,7 +2169,8 @@ function getGatewayClient() {
     const gatewayUrl = `ws://${INTERNAL_GATEWAY_HOST}:${INTERNAL_GATEWAY_PORT}/gateway?token=${OPENCLAW_GATEWAY_TOKEN}`;
     gatewayClient = new OpenClawGatewayClient({
       gatewayUrl,
-      token: OPENCLAW_GATEWAY_TOKEN
+      token: OPENCLAW_GATEWAY_TOKEN,
+      stateDir: STATE_DIR
     });
   }
   return gatewayClient;

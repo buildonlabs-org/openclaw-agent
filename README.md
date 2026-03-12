@@ -329,7 +329,7 @@ curl -X POST \
 
 ### Telegram/Discord Not Working
 
-1. **For Gateway Connections**: Device pairing is automatically bypassed
+1. **For Gateway Connections**: Device pairing is automatically handled
 2. **For Channel DMs**: Users need pairing approval:
    - User sends a message to your bot
    - User receives pairing code
@@ -339,6 +339,23 @@ curl -X POST \
 3. **Bot Token Invalid**: 
    - Verify token in Bot settings
    - Reset Setup and re-enter token
+
+📖 **See [TROUBLESHOOTING-PAIRING.md](TROUBLESHOOTING-PAIRING.md) for detailed channel pairing guide**
+
+### Skill Installation Fails with "Pairing Required"
+
+When installing skills from chat, you may see: `disconnected (1008): pairing required`
+
+**This is because skill installation requires device/node pairing approval (a security feature).**
+
+**Quick Fix:**
+1. Check device status: `GET /api/devices/status`
+2. List pending devices: `GET /api/devices` or `openclaw devices list`  
+3. Approve device: `POST /api/devices/approve` or `openclaw devices approve <requestId>`
+
+📖 **See [DEVICE-PAIRING-GUIDE.md](DEVICE-PAIRING-GUIDE.md) for complete step-by-step instructions**
+
+**Note:** Device approval is a **one-time setup**. Device identity persists across redeployments via `/data/.openclaw/device.id`.
 
 ### Configuration Won't Persist
 

@@ -575,7 +575,66 @@ curl -X POST \
 
 ---
 
-## 10. List Skills
+### 10. Check Device Pairing Status
+
+**`GET /api/devices/status`**
+
+Check the device pairing status for this backend instance. Useful for troubleshooting skill installation issues.
+
+**Request:**
+```bash
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+  https://your-agent.railway.app/api/devices/status
+```
+
+**Response:**
+```json
+{
+  "ok": true,
+  "deviceId": "a1b2c3d4e5f6789abc...",
+  "deviceIdPersisted": true,
+  "pairingRequired": false,
+  "stateDir": "/data/.openclaw",
+  "help": {
+    "message": "Device pairing status OK",
+    "commands": [
+      "openclaw devices list",
+      "openclaw devices approve <requestId>"
+    ],
+    "apiEndpoints": {
+      "listDevices": "GET /api/devices",
+      "approveDevice": "POST /api/devices/approve {requestId: \"...\"}"
+    }
+  }
+}
+```
+
+**Response when pairing required:**
+```json
+{
+  "ok": true,
+  "deviceId": "a1b2c3d4e5f6789abc...",
+  "deviceIdPersisted": true,
+  "pairingRequired": true,
+  "stateDir": "/data/.openclaw",
+  "help": {
+    "message": "Device pairing is required. Use 'openclaw devices list' to find the request ID, then 'openclaw devices approve <requestId>' to approve.",
+    "commands": [
+      "openclaw devices list",
+      "openclaw devices approve <requestId>"
+    ]
+  }
+}
+```
+
+**Use Cases:**
+- Troubleshooting skill installation failures
+- Verifying device persistence across redeployments
+- Checking if approval is needed before attempting privileged operations
+
+---
+
+## 11. List Skills
 
 **`GET /api/skills`**
 
@@ -773,7 +832,35 @@ curl -X POST \
   "output": "- Resolving postgres-backup\n✖ Rate limit exceeded\n",
   "exitCode": 1,
   "error": "Rate limit exceeded",
-  "suggestion": "Wait 1-2 minutes and retry, or use {\"retry\": true} in request body for automatic retries"
+  "suggestion": "Wait 2 minutes and retry, or use {\"retry\": true} in request body for automatic retries (waits 2 minutes between attempts)"
+}
+```
+
+**Response (Device Pairing Required - HTTP 403):**
+```json
+{
+  "ok": false,
+  "slug": "postgres-backup",
+  "error": "Device pairing required",
+  "message": "Skill installation requires device approval. Please approve the device pairing request.",
+  "deviceId": "a1b2c3d4e5f6789abc...",
+  "instructions": {
+    "cli": [
+      "Run on gateway host:",
+      "  openclaw devices list",
+      "  openclaw devices approve <requestId>"
+    ],
+    "api": [
+      "Use the API endpoints:",
+      "  GET /api/devices - List pending devices",
+      "  POST /api/devices/approve - Approve device"
+    ],
+    "ui": [
+      "Or use the web UI:",
+      "  Navigate to /setup",
+      "  Look for device approval section"
+    ]
+  }
 }
 ```
 
@@ -789,9 +876,21 @@ curl -X POST \
 
 ClawHub has rate limits on package downloads. For programmatic use:
 
-- **Manual retry:** Wait 1-2 minutes between requests
-- **Automatic retry:** Add `"retry": true` for exponential backoff (3 attempts)
+- **Manual retry:** Wait 2 minutes between requests
+- **Automatic retry:** Add `"retry": true` for automatic retries with 2-minute wait between attempts (3 attempts total)
 - **Better alternative:** Let users install via Telegram/Discord where agent handles retries naturally
+
+**Device Pairing for Skill Installation:**
+
+Skill installation is a **privileged operation** that requires device/node pairing approval (a security feature).
+
+- **First-time setup:** You'll need to approve the device once per deployment
+- **Persistent identity:** Device ID is stored in `/data/.openclaw/device.id` and survives redeployments
+- **How to approve:**
+  1. Check device status: `GET /api/devices/status`
+  2. List pending devices: `GET /api/devices`
+  3. Approve device: `POST /api/devices/approve`
+- **Detailed guide:** See [DEVICE-PAIRING-GUIDE.md](DEVICE-PAIRING-GUIDE.md)
 
 **Frontend Usage:**
 - Use API for initial workspace setup or bulk installations
