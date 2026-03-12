@@ -1999,9 +1999,9 @@ app.post("/api/skills/install", requireApiKey, async (req, res) => {
     
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       if (attempt > 0) {
-        // Exponential backoff: 2s, 4s, 8s
-        const delay = Math.pow(2, attempt) * 1000;
-        console.log(`[api/skills/install] Rate limited, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries + 1})`);
+        // Wait 2 minutes between retries to respect ClawHub rate limits
+        const delay = 120000; // 2 minutes
+        console.log(`[api/skills/install] Rate limited, retrying in ${delay / 1000}s (attempt ${attempt + 1}/${maxRetries + 1})`);
         await new Promise(resolve => setTimeout(resolve, delay));
       }
       
@@ -2039,7 +2039,7 @@ app.post("/api/skills/install", requireApiKey, async (req, res) => {
       output: lastError.output,
       exitCode: lastError.code,
       error: isRateLimit ? 'Rate limit exceeded' : 'Installation failed',
-      suggestion: isRateLimit ? 'Wait 1-2 minutes and retry, or use {"retry": true} in request body for automatic retries' : undefined
+      suggestion: isRateLimit ? 'Wait 2 minutes and retry, or use {"retry": true} in request body for automatic retries (waits 2 minutes between attempts)' : undefined
     });
   } catch (error) {
     res.status(500).json({ 

@@ -832,7 +832,7 @@ curl -X POST \
   "output": "- Resolving postgres-backup\n✖ Rate limit exceeded\n",
   "exitCode": 1,
   "error": "Rate limit exceeded",
-  "suggestion": "Wait 1-2 minutes and retry, or use {\"retry\": true} in request body for automatic retries"
+  "suggestion": "Wait 2 minutes and retry, or use {\"retry\": true} in request body for automatic retries (waits 2 minutes between attempts)"
 }
 ```
 
@@ -876,8 +876,8 @@ curl -X POST \
 
 ClawHub has rate limits on package downloads. For programmatic use:
 
-- **Manual retry:** Wait 1-2 minutes between requests
-- **Automatic retry:** Add `"retry": true` for exponential backoff (3 attempts)
+- **Manual retry:** Wait 2 minutes between requests
+- **Automatic retry:** Add `"retry": true` for automatic retries with 2-minute wait between attempts (3 attempts total)
 - **Better alternative:** Let users install via Telegram/Discord where agent handles retries naturally
 
 **Device Pairing for Skill Installation:**
