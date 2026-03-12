@@ -258,6 +258,8 @@ async function startGateway() {
       ...process.env,
       OPENCLAW_STATE_DIR: STATE_DIR,
       OPENCLAW_WORKSPACE_DIR: WORKSPACE_DIR,
+      OPENCLAW_SKIP_DEVICE_PAIRING: "true",  // Skip device pairing requirement
+      OPENCLAW_AUTO_APPROVE_DEVICES: "true",  // Auto-approve device requests
     },
   });
 
@@ -311,32 +313,42 @@ async function ensureGatewayRunning() {
             const result = await runCmd(OPENCLAW_CLI, ["devices", "list"]);
             const output = result.output || "";
             
-            // Look for pending device IDs in the output
+            if (!output.trim()) return; // No output yet
+            
+            // Parse output for pending devices (same logic as /api/devices endpoint)
             const lines = output.split('\n');
+            const pendingDevices = [];
+            
             for (const line of lines) {
-              if (line.includes('pending')) {
-                // Extract device ID (format varies, but usually hex string)
-                const match = line.match(/([a-f0-9]{8,})/i);
-                if (match && match[1]) {
-                  const deviceId = match[1];
-                  console.log(`[gateway] auto-approving device: ${deviceId}`);
-                  try {
-                    await runCmd(OPENCLAW_CLI, ["devices", "approve", deviceId]);
-                    console.log(`[gateway] ✓ device ${deviceId} approved`);
-                  } catch (err) {
-                    console.warn(`[gateway] failed to approve device ${deviceId}: ${err.message}`);
-                  }
+              if (!line.trim()) continue;
+              const pendingMatch = line.match(/pending.*?([a-f0-9]{12,})/i);
+              if (pendingMatch) {
+                pendingDevices.push(pendingMatch[1]);
+              }
+            }
+            
+            // Auto-approve each pending device
+            for (const deviceId of pendingDevices) {
+              console.log(`[gateway] 🔓 Auto-approving device: ${deviceId}`);
+              try {
+                const approveResult = await runCmd(OPENCLAW_CLI, ["devices", "approve", deviceId]);
+                if (approveResult.code === 0) {
+                  console.log(`[gateway] ✅ Device ${deviceId} approved successfully`);
+                } else {
+                  console.warn(`[gateway] ⚠️  Device approval returned code ${approveResult.code}: ${approveResult.output}`);
                 }
+              } catch (approveErr) {
+                console.warn(`[gateway] ❌ Failed to approve device ${deviceId}: ${approveErr.message}`);
               }
             }
           } catch (err) {
-            // Silent fail - devices command might not be available yet
+            // Silent fail - devices command might not be available yet or no devices pending
           }
         };
         
-        // Check immediately and then every 3 seconds
-        setInterval(checkAndApproveDevices, 3000);
+        // Check immediately after 1 second and then every 3 seconds
         setTimeout(checkAndApproveDevices, 1000);
+        setInterval(checkAndApproveDevices, 3000);
       }
     } finally {
       gatewayStarting = null;
