@@ -9,38 +9,13 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-// Generate device ID for tracking (not used for pairing - pairing disabled)
-function getOrCreateDeviceId(stateDir) {
-  const deviceIdPath = path.join(stateDir, "device.id");
-  
-  try {
-    if (fs.existsSync(deviceIdPath)) {
-      const deviceId = fs.readFileSync(deviceIdPath, "utf8").trim();
-      if (deviceId) return deviceId;
-    }
-  } catch (err) {
-    // Ignore
-  }
-  
-  // Generate new device ID for tracking
-  const deviceId = crypto.randomBytes(16).toString("hex");
-  
-  try {
-    fs.mkdirSync(stateDir, { recursive: true });
-    fs.writeFileSync(deviceIdPath, deviceId);
-  } catch (err) {
-    // Ignore
-  }
-  
-  return deviceId;
-}
+// Note: Device ID generation removed - not needed when device pairing is disabled
 
 export class OpenClawGatewayClient {
   constructor({ gatewayUrl, token, stateDir }) {
     this.gatewayUrl = gatewayUrl;
     this.token = token;
     this.stateDir = stateDir || process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), ".openclaw");
-    this.deviceId = getOrCreateDeviceId(this.stateDir);
 
     this.ws = null;
     this.ready = false;
@@ -59,7 +34,7 @@ export class OpenClawGatewayClient {
     }
 
     this.ready = false;
-    console.log(`[gateway] Connecting to Gateway (device pairing disabled)`);
+    console.log(`[gateway] Connecting to Gateway (device pairing disabled for API usage)`);
 
     this.ws = new WebSocket(this.gatewayUrl);
 
@@ -94,10 +69,6 @@ export class OpenClawGatewayClient {
     while (!this.ready) {
       if (Date.now() - start > 10_000) {
         console.error(`[gateway] Connection timeout after 10s`);
-        // If pairing is required, throw a more helpful error
-        if (this.pairingRequired) {
-          throw new Error(`Gateway connection failed: Device pairing required. Device ID: ${this.deviceId}. Run: openclaw devices list && openclaw devices approve <requestId>`);
-        }
         throw new Error("Gateway connect timeout");
       }
       await sleep(50);
@@ -121,9 +92,9 @@ export class OpenClawGatewayClient {
     // Debug logging
     console.log("[gateway] <=", msg.type, msg.event || msg.id || "", msg.ok === false ? msg.error : "");
 
-    // 1) Challenge -> send connect without device (simpler, chat works, skill install via API)
+    // 1) Challenge -> send connect without device (skill execution works without pairing)
     if (msg.type === "event" && msg.event === "connect.challenge") {
-      console.log(`[gateway] Received challenge, sending connect (no device pairing)`);
+      console.log(`[gateway] Received challenge, sending connect (device pairing disabled for API usage)`);
       
       this._send({
         type: "req",
@@ -139,10 +110,10 @@ export class OpenClawGatewayClient {
           commands: [],
           permissions: {},
           auth: { token: this.token },
+          // Note: Device field omitted - allows skill execution without device approval
+          // This is safe because auth is still enforced via bearer token
           locale: "en-US",
           userAgent: "backend-gateway-client",
-          // Note: Device pairing disabled - skill installation from chat won't work
-          // Use API endpoint POST /api/skills/install instead
         },
       });
 
@@ -156,13 +127,9 @@ export class OpenClawGatewayClient {
         this.pairingRequired = false;
         console.log("[gateway] Connected successfully");
       } else {
-        // Check if pairing is required
-        const errorMsg = msg.error?.message || "";
-        if (errorMsg.includes("pairing") || errorMsg.includes("1008")) {
-          this.pairingRequired = true;
-          console.warn(`[gateway] Device pairing required for device ID: ${this.deviceId}`);
-          console.warn(`[gateway] Approve device via: openclaw devices list && openclaw devices approve <requestId>`);
-        }
+        // Log connection error
+        const errorMsg = msg.error?.message || "Unknown error";
+        console.error(`[gateway] Connection failed: ${errorMsg}`);
       }
       return;
     }

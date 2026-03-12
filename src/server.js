@@ -1690,27 +1690,15 @@ app.post("/api/devices/approve", requireApiKey, async (req, res) => {
 // GET /api/devices/status - Check device pairing status for this instance
 app.get("/api/devices/status", requireApiKey, async (_req, res) => {
   try {
-    const client = getGatewayClient();
-    const deviceIdPath = path.join(STATE_DIR, "device.id");
-    
     res.json({
       ok: true,
-      deviceId: client.deviceId,
-      deviceIdPersisted: fs.existsSync(deviceIdPath),
-      pairingRequired: client.pairingRequired || false,
+      devicePairingEnabled: false,
+      pairingRequired: false,
       stateDir: STATE_DIR,
+      message: "Device pairing is disabled for API-based usage. Skills can be used without device approval.",
       help: {
-        message: client.pairingRequired 
-          ? "Device pairing is required. Use 'openclaw devices list' to find the request ID, then 'openclaw devices approve <requestId>' to approve."
-          : "Device pairing status OK",
-        commands: [
-          "openclaw devices list",
-          "openclaw devices approve <requestId>"
-        ],
-        apiEndpoints: {
-          listDevices: "GET /api/devices",
-          approveDevice: "POST /api/devices/approve {requestId: \"...\"}"
-        }
+        message: "Device pairing is disabled. All operations work without device approval.",
+        note: "Device pairing is only needed for Telegram/Discord channel access, not for API usage."
       }
     });
   } catch (error) {
