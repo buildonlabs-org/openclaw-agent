@@ -304,6 +304,36 @@ async function ensureGatewayRunning() {
       if (isReady) {
         // Reset restart attempts counter on successful start
         restartAttempts = 0;
+        
+        // Auto-approve any pending device pairing requests
+        setTimeout(async () => {
+          try {
+            console.log("[gateway] checking for pending device pairing requests...");
+            const result = await runCmd(OPENCLAW_CLI, ["devices", "list"]);
+            const output = result.output || "";
+            
+            // Look for pending device IDs in the output
+            const lines = output.split('\n');
+            for (const line of lines) {
+              if (line.includes('pending')) {
+                // Extract device ID (format varies, but usually hex string)
+                const match = line.match(/([a-f0-9]{8,})/i);
+                if (match && match[1]) {
+                  const deviceId = match[1];
+                  console.log(`[gateway] auto-approving device: ${deviceId}`);
+                  try {
+                    await runCmd(OPENCLAW_CLI, ["devices", "approve", deviceId]);
+                    console.log(`[gateway] device ${deviceId} approved`);
+                  } catch (err) {
+                    console.warn(`[gateway] failed to approve device ${deviceId}: ${err.message}`);
+                  }
+                }
+              }
+            }
+          } catch (err) {
+            console.warn(`[gateway] device auto-approval check failed: ${err.message}`);
+          }
+        }, 2000); // Wait 2 seconds for gateway to fully initialize
       }
     } finally {
       gatewayStarting = null;
