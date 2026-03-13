@@ -348,35 +348,36 @@ async function ensureGatewayRunning() {
               return;
             }
             
-            // Parse output for pending devices (same logic as /api/devices endpoint)
+            // Parse output for pending devices - extract UUIDs from table rows
             const lines = output.split('\n');
-            const pendingDevices = [];
+            const pendingRequestIds = [];
             
             for (const line of lines) {
               if (!line.trim()) continue;
-              console.log(`[gateway] Checking line: "${line}"`);
-              const pendingMatch = line.match(/pending.*?([a-f0-9]{12,})/i);
-              if (pendingMatch) {
-                pendingDevices.push(pendingMatch[1]);
-                console.log(`[gateway] Found pending device: ${pendingMatch[1]}`);
+              // Look for table rows with UUIDs in first column: │ <uuid> │
+              const uuidMatch = line.match(/│\s*([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\s*│/i);
+              if (uuidMatch) {
+                const requestId = uuidMatch[1];
+                console.log(`[gateway] Found pending request: ${requestId}`);
+                pendingRequestIds.push(requestId);
               }
             }
             
-            console.log(`[gateway] Found ${pendingDevices.length} pending device(s)`);
+            console.log(`[gateway] Found ${pendingRequestIds.length} pending request(s)`);
             
-            // Auto-approve each pending device
-            for (const deviceId of pendingDevices) {
-              console.log(`[gateway] 🔓 Auto-approving device: ${deviceId}`);
+            // Auto-approve each pending device request
+            for (const requestId of pendingRequestIds) {
+              console.log(`[gateway] 🔓 Auto-approving request: ${requestId}`);
               try {
-                const approveResult = await runCmd(OPENCLAW_CLI, ["devices", "approve", deviceId]);
-                console.log(`[gateway] Approve result code: ${approveResult.code}, output: ${approveResult.output}`);
+                const approveResult = await runCmd(OPENCLAW_CLI, ["devices", "approve", requestId]);
+                console.log(`[gateway] Approve result code: ${approveResult.code}`);
                 if (approveResult.code === 0) {
-                  console.log(`[gateway] ✅ Device ${deviceId} approved successfully`);
+                  console.log(`[gateway] ✅ Request ${requestId} approved successfully`);
                 } else {
-                  console.warn(`[gateway] ⚠️  Device approval returned code ${approveResult.code}: ${approveResult.output}`);
+                  console.warn(`[gateway] ⚠️  Approval returned code ${approveResult.code}`);
                 }
               } catch (approveErr) {
-                console.error(`[gateway] ❌ Failed to approve device ${deviceId}: ${approveErr.message}`);
+                console.error(`[gateway] ❌ Failed to approve request ${requestId}: ${approveErr.message}`);
               }
             }
           } catch (err) {
@@ -1736,10 +1737,11 @@ app.get("/api/devices", requireApiKey, async (_req, res) => {
     
     for (const line of lines) {
       if (!line.trim()) continue;
-      const pendingMatch = line.match(/pending.*?([a-f0-9]{12,})/i);
-      if (pendingMatch) {
+      // Extract UUID request IDs from table rows: │ <uuid> │
+      const uuidMatch = line.match(/│\s*([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\s*│/i);
+      if (uuidMatch) {
         devices.push({
-          requestId: pendingMatch[1],
+          requestId: uuidMatch[1],
           status: 'pending',
           info: line.trim(),
         });
