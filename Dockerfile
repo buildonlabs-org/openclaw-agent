@@ -29,6 +29,10 @@ RUN curl -fsSL https://openclaw.ai/install.sh | bash || echo "Install script exi
 # Install ClawHub CLI for skill management
 RUN npm install -g clawhub || pnpm add -g clawhub || echo "ClawHub CLI install failed, will skip skill features"
 
+# Cache bust for skill installation - change this value to force rebuild
+ARG SKILL_CACHE_VERSION=v2
+RUN echo "Skill cache version: $SKILL_CACHE_VERSION"
+
 # Pre-install common skills to a cache directory during build
 # This avoids runtime rate limits by bundling skills in the Docker image
 # Add/remove skills from this list as needed for your use case
