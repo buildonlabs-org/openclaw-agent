@@ -2230,9 +2230,27 @@ app.get("/api/skills/cache", requireApiKey, async (_req, res) => {
   try {
     // ClawHub installs to <workdir>/skills/, so check there
     const cached = [];
+    const debug = {};
+    
+    // Debug info
+    debug.skillsCachePath = SKILLS_CACHE;
+    debug.skillsCacheExists = fs.existsSync(SKILLS_CACHE);
+    
+    // Check parent directory
+    const parentDir = path.dirname(SKILLS_CACHE);
+    debug.parentDir = parentDir;
+    debug.parentDirExists = fs.existsSync(parentDir);
+    if (debug.parentDirExists) {
+      try {
+        debug.parentDirContents = fs.readdirSync(parentDir).join(', ');
+      } catch (err) {
+        debug.parentDirError = err.message;
+      }
+    }
     
     if (fs.existsSync(SKILLS_CACHE)) {
       const entries = fs.readdirSync(SKILLS_CACHE, { withFileTypes: true });
+      debug.cacheEntries = entries.map(e => `${e.name} (${e.isDirectory() ? 'dir' : 'file'})`).join(', ');
       
       for (const entry of entries) {
         if (entry.isDirectory() && !entry.name.startsWith('.')) {
@@ -2251,7 +2269,8 @@ app.get("/api/skills/cache", requireApiKey, async (_req, res) => {
       count: cached.length,
       message: cached.length > 0 
         ? `${cached.length} skill(s) available in cache (instant install, no rate limits)` 
-        : 'No cached skills available'
+        : 'No cached skills available',
+      debug
     });
   } catch (error) {
     res.status(500).json({ 
