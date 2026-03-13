@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import cors from "cors";
 import express from "express";
 import httpProxy from "http-proxy";
 import { WebSocketServer } from "ws";
@@ -592,6 +593,36 @@ function requireApiKey(req, res, next) {
 // Express app
 const app = express();
 app.disable("x-powered-by");
+
+// CORS configuration
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl)
+    if (!origin) return callback(null, true);
+    
+    // Allow all Railway domains
+    if (origin.includes('.railway.app')) return callback(null, true);
+    
+    // Allow localhost for development
+    if (origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) {
+      return callback(null, true);
+    }
+    
+    // Allow configured domains
+    if (process.env.RAILWAY_PUBLIC_DOMAIN && origin.includes(process.env.RAILWAY_PUBLIC_DOMAIN)) {
+      return callback(null, true);
+    }
+    
+    // Allow any other origin (you can restrict this further if needed)
+    return callback(null, true);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  exposedHeaders: ['Content-Range', 'X-Content-Range']
+};
+
+app.use(cors(corsOptions));
 app.use(express.json({ limit: "1mb" }));
 
 // Health endpoints
