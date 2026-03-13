@@ -9,13 +9,75 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-// Note: Device ID generation removed - not needed when device pairing is disabled
+// Device key persistence helpers
+function getDeviceKeyPath(stateDir) {
+  return path.join(stateDir, "device-key.pem");
+}
+
+function loadOrGenerateDeviceKey(stateDir) {
+  const keyPath = getDeviceKeyPath(stateDir);
+  
+  try {
+    // Try loading existing key
+    if (fs.existsSync(keyPath)) {
+      const keyData = fs.readFileSync(keyPath, 'utf8');
+      const privateKey = crypto.createPrivateKey({
+        key: keyData,
+        format: 'pem',
+        type: 'pkcs8'
+      });
+      const publicKey = crypto.createPublicKey(privateKey);
+      console.log('[gateway] Loaded existing device key');
+      return { publicKey, privateKey };
+    }
+  } catch (err) {
+    console.warn('[gateway] Failed to load device key, generating new one:', err.message);
+  }
+  
+  // Generate new Ed25519 keypair
+  console.log('[gateway] Generating new Ed25519 device keypair...');
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
+  
+  // Save private key
+  try {
+    fs.mkdirSync(path.dirname(keyPath), { recursive: true });
+    const keyPem = privateKey.export({ type: 'pkcs8', format: 'pem' });
+    fs.writeFileSync(keyPath, keyPem, { mode: 0o600 });
+    console.log('[gateway] Saved device key to', keyPath);
+  } catch (err) {
+    console.warn('[gateway] Failed to save device key:', err.message);
+  }
+  
+  return { publicKey, privateKey };
+}
+
+function deviceIdFromRawPublicKey(rawPk) {
+  return crypto.createHash('sha256').update(rawPk).digest('hex');
+}
+
+function buildDeviceAuthPayloadV2({ deviceId, clientId, clientMode, role, scopes, signedAtMs, token, nonce }) {
+  const scopesStr = scopes.join(',');
+  return `v2|${deviceId}|${clientId}|${clientMode}|${role}|${scopesStr}|${signedAtMs}|${token}|${nonce}`;
+}
 
 export class OpenClawGatewayClient {
   constructor({ gatewayUrl, token, stateDir }) {
     this.gatewayUrl = gatewayUrl;
     this.token = token;
     this.stateDir = stateDir || process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), ".openclaw");
+
+    // Load or generate device keys
+    const { publicKey, privateKey } = loadOrGenerateDeviceKey(this.stateDir);
+    this.publicKey = publicKey;
+    this.privateKey = privateKey;
+    
+    // Extract raw Ed25519 public key (last 32 bytes of SPKI DER)
+    const publicKeySpkiDer = publicKey.export({ type: 'spki', format: 'der' });
+    this.rawPublicKey = publicKeySpkiDer.subarray(publicKeySpkiDer.length - 32);
+    this.rawPublicKeyB64 = this.rawPublicKey.toString('base64');
+    this.deviceId = deviceIdFromRawPublicKey(this.rawPublicKey);
+    
+    console.log('[gateway] Device ID:', this.deviceId);
 
     this.ws = null;
     this.ready = false;
@@ -34,7 +96,7 @@ export class OpenClawGatewayClient {
     }
 
     this.ready = false;
-    console.log(`[gateway] Connecting to Gateway (device pairing disabled for API usage)`);
+    console.log(`[gateway] Connecting to Gateway with device ID ${this.deviceId.substring(0, 12)}...`);
 
     this.ws = new WebSocket(this.gatewayUrl);
 
@@ -92,9 +154,36 @@ export class OpenClawGatewayClient {
     // Debug logging
     console.log("[gateway] <=", msg.type, msg.event || msg.id || "", msg.ok === false ? msg.error : "");
 
-    // 1) Challenge -> send connect without device (skill execution works without pairing)
+    // 1) Challenge -> send signed connect WITH device pairing for proper scopes
     if (msg.type === "event" && msg.event === "connect.challenge") {
-      console.log(`[gateway] Received challenge, sending connect (device pairing disabled for API usage)`);
+      console.log(`[gateway] Received challenge, signing with device key`);
+      
+      const nonce = msg.payload?.nonce;
+      if (!nonce) {
+        console.error('[gateway] Missing nonce in challenge');
+        return;
+      }
+      
+      const signedAt = Date.now();
+      const clientId = 'cli';
+      const clientMode = 'cli';
+      const role = 'operator';
+      const scopes = ['operator.read', 'operator.write', 'operator.admin'];
+      
+      // Build v2 payload for signature
+      const payload = buildDeviceAuthPayloadV2({
+        deviceId: this.deviceId,
+        clientId,
+        clientMode,
+        role,
+        scopes,
+        signedAtMs: signedAt,
+        token: this.token,
+        nonce,
+      });
+      
+      // Sign with Ed25519 private key
+      const signature = crypto.sign(null, Buffer.from(payload, 'utf8'), this.privateKey);
       
       this._send({
         type: "req",
@@ -103,15 +192,20 @@ export class OpenClawGatewayClient {
         params: {
           minProtocol: 3,
           maxProtocol: 3,
-          client: { id: "cli", version: "1.0.0", platform: "linux", mode: "cli" },
-          role: "operator",
-          scopes: ["operator.read", "operator.write", "operator.admin"],
+          client: { id: clientId, version: "1.0.0", platform: "linux", mode: clientMode },
+          role,
+          scopes,
           caps: [],
           commands: [],
           permissions: {},
           auth: { token: this.token },
-          // Note: Device field omitted - allows skill execution without device approval
-          // This is safe because auth is still enforced via bearer token
+          device: {
+            id: this.deviceId,
+            publicKey: this.rawPublicKeyB64,
+            signature: signature.toString('base64'),
+            signedAt,
+            nonce,
+          },
           locale: "en-US",
           userAgent: "backend-gateway-client",
         },
@@ -125,11 +219,17 @@ export class OpenClawGatewayClient {
       if (msg.ok) {
         this.ready = true;
         this.pairingRequired = false;
-        console.log("[gateway] Connected successfully");
+        console.log("[gateway] Connected successfully with device pairing");
       } else {
         // Log connection error
         const errorMsg = msg.error?.message || "Unknown error";
         console.error(`[gateway] Connection failed: ${errorMsg}`);
+        
+        // Check if it's a pairing requirement
+        if (errorMsg.includes('pairing required') || errorMsg.includes('not paired')) {
+          this.pairingRequired = true;
+          console.warn('[gateway] ⚠️  Device pairing required - waiting for auto-approval...');
+        }
       }
       return;
     }
