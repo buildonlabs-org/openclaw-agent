@@ -90,53 +90,85 @@ export class OpenClawGatewayClient {
   async connect() {
     if (this.ready && this.ws && this.ws.readyState === WebSocket.OPEN) return;
 
-    // If a prior socket exists, close it
-    if (this.ws) {
-      try { this.ws.close(); } catch {}
-    }
-
-    this.ready = false;
-    console.log(`[gateway] Connecting to Gateway with device ID ${this.deviceId.substring(0, 12)}...`);
-
-    this.ws = new WebSocket(this.gatewayUrl);
-
-    this.ws.on("open", () => {
-      console.log(`[gateway] WebSocket connection opened, waiting for challenge...`);
-    });
-
-    this.ws.on("message", (data) => this._onMessage(data));
+    // Retry logic for device pairing
+    const maxRetries = 12; // 12 retries = up to 60 seconds for pairing
+    let attempt = 0;
     
-    this.ws.on("close", (code, reason) => {
-      const reasonStr = reason?.toString() || "";
-      this.ready = false;
+    while (attempt < maxRetries) {
+      attempt++;
       
-      if (code !== 1000) {
-        console.warn(`[gateway] Connection closed - Code: ${code}, Reason: ${reasonStr || '(none)'}`);
+      // If a prior socket exists, close it
+      if (this.ws) {
+        try { this.ws.close(); } catch {}
+      }
+
+      this.ready = false;
+      this.pairingRequired = false;
+      
+      if (attempt === 1) {
+        console.log(`[gateway] Connecting to Gateway with device ID ${this.deviceId.substring(0, 12)}...`);
+      } else {
+        console.log(`[gateway] Retry ${attempt}/${maxRetries} - reconnecting after pairing...`);
+      }
+
+      this.ws = new WebSocket(this.gatewayUrl);
+
+      this.ws.on("open", () => {
+        console.log(`[gateway] WebSocket connection opened, waiting for challenge...`);
+      });
+
+      this.ws.on("message", (data) => this._onMessage(data));
+      
+      this.ws.on("close", (code, reason) => {
+        const reasonStr = reason?.toString() || "";
+        this.ready = false;
+        
+        if (code !== 1000) {
+          console.warn(`[gateway] Connection closed - Code: ${code}, Reason: ${reasonStr || '(none)'}`);
+        }
+        
+        // fail all pending
+        for (const [id, p] of this.pending.entries()) {
+          p.reject(new Error(`gateway connection closed (${code}): ${reasonStr}`));
+          this.pending.delete(id);
+        }
+      });
+      
+      this.ws.on("error", (err) => {
+        this.ready = false;
+        console.error(`[gateway] WebSocket error:`, err.message);
+      });
+
+      // Wait until ready or pairing required
+      const start = Date.now();
+      const attemptTimeout = 8000; // 8 seconds per attempt
+      
+      while (!this.ready && !this.pairingRequired) {
+        if (Date.now() - start > attemptTimeout) {
+          console.error(`[gateway] Connection attempt ${attempt} timeout after ${attemptTimeout}ms`);
+          break;
+        }
+        await sleep(50);
       }
       
-      // fail all pending
-      for (const [id, p] of this.pending.entries()) {
-        p.reject(new Error(`gateway connection closed (${code}): ${reasonStr}`));
-        this.pending.delete(id);
+      // If connected successfully, we're done
+      if (this.ready) {
+        console.log(`[gateway] ✓ Connected successfully`);
+        return;
       }
-    });
-    
-    this.ws.on("error", (err) => {
-      this.ready = false;
-      console.error(`[gateway] WebSocket error:`, err.message);
-    });
-
-    // Wait until ready
-    const start = Date.now();
-    while (!this.ready) {
-      if (Date.now() - start > 30_000) {  // Increased from 10s to 30s for device pairing
-        console.error(`[gateway] Connection timeout after 30s`);
-        throw new Error("Gateway connect timeout");
+      
+      // If pairing is required and we still have retries, wait and retry
+      if (this.pairingRequired && attempt < maxRetries) {
+        console.log(`[gateway] Waiting 5s for auto-approval before retry...`);
+        await sleep(5000);
+        continue;
       }
-      await sleep(50);
+      
+      // If we exhausted retries or other error, fail
+      if (attempt >= maxRetries) {
+        throw new Error("Gateway connect timeout - device pairing may be required");
+      }
     }
-    
-    console.log(`[gateway] ✓ Connected successfully`);
   }
 
   _send(obj) {

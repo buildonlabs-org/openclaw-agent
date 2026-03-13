@@ -2867,6 +2867,17 @@ const server = app.listen(PORT, () => {
   console.log(`[wrapper] configured: ${isConfigured()}`);
   console.log(`[wrapper] gateway token: ${OPENCLAW_GATEWAY_TOKEN.slice(0, 12)}...`);
 
+  // Initialize wallet immediately (doesn't depend on gateway being configured)
+  (async () => {
+    try {
+      console.log("[wrapper] initializing agent wallet...");
+      agentWallet = await initializeWallet(STATE_DIR);
+      console.log(`[wrapper] wallet ready: ${agentWallet.getInfo().address}`);
+    } catch (err) {
+      console.error(`[wrapper] wallet initialization failed: ${err.message}`);
+    }
+  })();
+
   if (isConfigured()) {
     (async () => {
       try {
@@ -2876,15 +2887,6 @@ const server = app.listen(PORT, () => {
         if (dr.output) console.log(dr.output);
       } catch (err) {
         console.warn(`[wrapper] doctor --fix failed: ${err.message}`);
-      }
-      
-      // Initialize crypto wallet for agent
-      try {
-        console.log("[wrapper] initializing agent wallet...");
-        agentWallet = await initializeWallet(STATE_DIR);
-        console.log(`[wrapper] wallet ready: ${agentWallet.getInfo().address}`);
-      } catch (err) {
-        console.error(`[wrapper] wallet initialization failed: ${err.message}`);
       }
       
       await ensureGatewayRunning();
