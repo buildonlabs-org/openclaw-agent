@@ -47,6 +47,7 @@ const WRAPPER_API_KEY = process.env.WRAPPER_API_KEY?.trim() || OPENCLAW_GATEWAY_
 const INTERNAL_GATEWAY_PORT = Number.parseInt(process.env.INTERNAL_GATEWAY_PORT ?? "18789", 10);
 const INTERNAL_GATEWAY_HOST = process.env.INTERNAL_GATEWAY_HOST ?? "127.0.0.1";
 const GATEWAY_TARGET = `http://${INTERNAL_GATEWAY_HOST}:${INTERNAL_GATEWAY_PORT}`;
+const SKILLS_CACHE = "/opt/skills-cache/skills";
 
 // Use openclaw CLI binary (installed via install.sh)
 const OPENCLAW_CLI = process.env.OPENCLAW_CLI?.trim() || "openclaw";
@@ -504,6 +505,55 @@ async function restartGateway() {
     await sleep(500);
   }
   await ensureGatewayRunning();
+}
+
+// Copy cached skills from Docker image to workspace on startup
+async function copyCachedSkillsToWorkspace() {
+  try {
+    // Check if cache directory exists
+    if (!fs.existsSync(SKILLS_CACHE)) {
+      console.log("[skills] no skill cache found at", SKILLS_CACHE);
+      return { copied: 0, skipped: 0, errors: 0 };
+    }
+
+    const targetDir = path.join(WORKSPACE_DIR, 'skills');
+    fs.mkdirSync(targetDir, { recursive: true });
+
+    const cachedSkills = fs.readdirSync(SKILLS_CACHE, { withFileTypes: true })
+      .filter(entry => entry.isDirectory() && !entry.name.startsWith('.'))
+      .map(entry => entry.name);
+
+    let copied = 0;
+    let skipped = 0;
+    let errors = 0;
+
+    for (const skillName of cachedSkills) {
+      const targetPath = path.join(targetDir, skillName);
+      
+      // Skip if already exists in workspace (user may have modified it)
+      if (fs.existsSync(targetPath)) {
+        skipped++;
+        continue;
+      }
+
+      try {
+        const sourcePath = path.join(SKILLS_CACHE, skillName);
+        
+        // Copy skill directory recursively
+        fs.cpSync(sourcePath, targetPath, { recursive: true });
+        copied++;
+        console.log(`[skills] installed from cache: ${skillName}`);
+      } catch (err) {
+        console.error(`[skills] failed to copy ${skillName}: ${err.message}`);
+        errors++;
+      }
+    }
+
+    return { copied, skipped, errors, total: cachedSkills.length };
+  } catch (err) {
+    console.error(`[skills] cache copy failed: ${err.message}`);
+    return { copied: 0, skipped: 0, errors: 1 };
+  }
 }
 
 // Rate limiter for setup endpoints
@@ -2178,14 +2228,14 @@ app.get("/api/skills/search", requireApiKey, async (req, res) => {
 // GET /api/skills/cache - List pre-built cached skills (no ClawHub request)
 app.get("/api/skills/cache", requireApiKey, async (_req, res) => {
   try {
-    const SKILLS_CACHE = "/opt/skills-cache";
+    // ClawHub installs to <workdir>/skills/, so check there
     const cached = [];
     
     if (fs.existsSync(SKILLS_CACHE)) {
       const entries = fs.readdirSync(SKILLS_CACHE, { withFileTypes: true });
       
       for (const entry of entries) {
-        if (entry.isDirectory()) {
+        if (entry.isDirectory() && !entry.name.startsWith('.')) {
           cached.push({
             slug: entry.name,
             path: path.join(SKILLS_CACHE, entry.name),
@@ -2221,14 +2271,16 @@ app.post("/api/skills/install", requireApiKey, async (req, res) => {
     }
     
     // Check if skill exists in pre-built cache (avoids ClawHub rate limits)
-    const SKILLS_CACHE = "/opt/skills-cache";
+    // ClawHub installs to <workdir>/skills/, so check there
     const cachedSkillPath = path.join(SKILLS_CACHE, slug);
     
     if (fs.existsSync(cachedSkillPath) && !force) {
       console.log(`[api/skills/install] Using cached skill: ${slug}`);
       
-      // Copy from cache to workspace
-      const targetPath = path.join(WORKSPACE_DIR, slug);
+      // Copy from cache to workspace/skills directory
+      const skillsDir = path.join(WORKSPACE_DIR, 'skills');
+      fs.mkdirSync(skillsDir, { recursive: true });
+      const targetPath = path.join(skillsDir, slug);
       try {
         // Use cp command for reliable copying
         const copyResult = await runCmd("cp", ["-r", cachedSkillPath, targetPath]);
@@ -2866,6 +2918,25 @@ const server = app.listen(PORT, () => {
   console.log(`[wrapper] setup wizard: http://localhost:${PORT}/setup`);
   console.log(`[wrapper] configured: ${isConfigured()}`);
   console.log(`[wrapper] gateway token: ${OPENCLAW_GATEWAY_TOKEN.slice(0, 12)}...`);
+
+  // Copy cached skills from Docker image to workspace
+  (async () => {
+    try {
+      console.log("[wrapper] copying cached skills to workspace...");
+      const result = await copyCachedSkillsToWorkspace();
+      if (result.copied > 0) {
+        console.log(`[wrapper] installed ${result.copied} skills from cache`);
+      }
+      if (result.skipped > 0) {
+        console.log(`[wrapper] skipped ${result.skipped} skills (already exist)`);
+      }
+      if (result.errors > 0) {
+        console.warn(`[wrapper] failed to copy ${result.errors} skills`);
+      }
+    } catch (err) {
+      console.error(`[wrapper] skill cache setup failed: ${err.message}`);
+    }
+  })();
 
   // Initialize wallet immediately (doesn't depend on gateway being configured)
   (async () => {
