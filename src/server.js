@@ -2280,6 +2280,90 @@ app.get("/api/skills/cache", requireApiKey, async (_req, res) => {
   }
 });
 
+// GET /api/skills/:slug/files - List files in a skill directory
+app.get("/api/skills/:slug/files", requireApiKey, async (req, res) => {
+  try {
+    const { slug } = req.params;
+    const skillPath = path.join(WORKSPACE_DIR, 'skills', slug);
+    
+    if (!fs.existsSync(skillPath)) {
+      return res.status(404).json({ 
+        ok: false, 
+        error: `Skill '${slug}' not found` 
+      });
+    }
+    
+    const files = fs.readdirSync(skillPath, { withFileTypes: true })
+      .map(entry => ({
+        name: entry.name,
+        type: entry.isDirectory() ? 'directory' : 'file',
+        path: path.join(skillPath, entry.name)
+      }));
+    
+    res.json({
+      ok: true,
+      slug,
+      path: skillPath,
+      files
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message 
+    });
+  }
+});
+
+// GET /api/skills/:slug/files/:filename - Read a specific file from a skill
+app.get("/api/skills/:slug/files/:filename", requireApiKey, async (req, res) => {
+  try {
+    const { slug, filename } = req.params;
+    const skillPath = path.join(WORKSPACE_DIR, 'skills', slug);
+    const filePath = path.join(skillPath, filename);
+    
+    // Security: ensure the file is within the skill directory
+    const normalizedSkillPath = path.normalize(skillPath);
+    const normalizedFilePath = path.normalize(filePath);
+    if (!normalizedFilePath.startsWith(normalizedSkillPath)) {
+      return res.status(403).json({ 
+        ok: false, 
+        error: 'Access denied: path traversal not allowed' 
+      });
+    }
+    
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ 
+        ok: false, 
+        error: `File '${filename}' not found in skill '${slug}'` 
+      });
+    }
+    
+    const stats = fs.statSync(filePath);
+    if (!stats.isFile()) {
+      return res.status(400).json({ 
+        ok: false, 
+        error: `'${filename}' is not a file` 
+      });
+    }
+    
+    const content = fs.readFileSync(filePath, 'utf8');
+    
+    res.json({
+      ok: true,
+      slug,
+      filename,
+      path: filePath,
+      size: stats.size,
+      content
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message 
+    });
+  }
+});
+
 // POST /api/skills/install - Install a skill
 app.post("/api/skills/install", requireApiKey, async (req, res) => {
   try {
