@@ -203,6 +203,33 @@ async function startGateway() {
     console.log(`[gateway] allowInsecureAuth config warning: ${err.message}`);
   }
 
+  // Disable device pairing requirement globally
+  try {
+    console.log("[gateway] disabling device pairing...");
+    await runCmd(OPENCLAW_CLI, [
+      "config",
+      "set",
+      "gateway.devices.requirePairing",
+      "false",
+    ]);
+    console.log("[gateway] device pairing disabled");
+  } catch (err) {
+    console.log(`[gateway] device pairing config warning: ${err.message}`);
+  }
+
+  // Alternative: allow unpaired device connections
+  try {
+    await runCmd(OPENCLAW_CLI, [
+      "config",
+      "set",
+      "gateway.devices.autoApprove",
+      "true",
+    ]);
+    console.log("[gateway] device auto-approve enabled");
+  } catch (err) {
+    console.log(`[gateway] device auto-approve config warning: ${err.message}`);
+  }
+
   // Configure allowed origins for Railway/external access
   try {
     console.log("[gateway] configuring CORS origins...");
@@ -250,6 +277,7 @@ async function startGateway() {
     "--token",
     OPENCLAW_GATEWAY_TOKEN,
     "--allow-unconfigured",
+    "--no-device-pairing",  // Try to disable device pairing via flag
   ];
 
   gatewayProc = childProcess.spawn(OPENCLAW_CLI, args, {
@@ -310,10 +338,16 @@ async function ensureGatewayRunning() {
         // Auto-approve any pending device pairing requests continuously
         const checkAndApproveDevices = async () => {
           try {
+            console.log(`[gateway] Checking for pending devices...`);
             const result = await runCmd(OPENCLAW_CLI, ["devices", "list"]);
             const output = result.output || "";
             
-            if (!output.trim()) return; // No output yet
+            console.log(`[gateway] Devices list output (${output.length} chars): ${output.substring(0, 200)}`);
+            
+            if (!output.trim()) {
+              console.log(`[gateway] No devices output yet`);
+              return;
+            }
             
             // Parse output for pending devices (same logic as /api/devices endpoint)
             const lines = output.split('\n');
@@ -321,28 +355,33 @@ async function ensureGatewayRunning() {
             
             for (const line of lines) {
               if (!line.trim()) continue;
+              console.log(`[gateway] Checking line: "${line}"`);
               const pendingMatch = line.match(/pending.*?([a-f0-9]{12,})/i);
               if (pendingMatch) {
                 pendingDevices.push(pendingMatch[1]);
+                console.log(`[gateway] Found pending device: ${pendingMatch[1]}`);
               }
             }
+            
+            console.log(`[gateway] Found ${pendingDevices.length} pending device(s)`);
             
             // Auto-approve each pending device
             for (const deviceId of pendingDevices) {
               console.log(`[gateway] 🔓 Auto-approving device: ${deviceId}`);
               try {
                 const approveResult = await runCmd(OPENCLAW_CLI, ["devices", "approve", deviceId]);
+                console.log(`[gateway] Approve result code: ${approveResult.code}, output: ${approveResult.output}`);
                 if (approveResult.code === 0) {
                   console.log(`[gateway] ✅ Device ${deviceId} approved successfully`);
                 } else {
                   console.warn(`[gateway] ⚠️  Device approval returned code ${approveResult.code}: ${approveResult.output}`);
                 }
               } catch (approveErr) {
-                console.warn(`[gateway] ❌ Failed to approve device ${deviceId}: ${approveErr.message}`);
+                console.error(`[gateway] ❌ Failed to approve device ${deviceId}: ${approveErr.message}`);
               }
             }
           } catch (err) {
-            // Silent fail - devices command might not be available yet or no devices pending
+            console.error(`[gateway] Error in checkAndApproveDevices: ${err.message}`);
           }
         };
         
