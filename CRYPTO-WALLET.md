@@ -2,21 +2,42 @@
 
 ## Overview
 
-Every OpenClaw agent automatically gets an **EVM-compatible crypto wallet** on first startup. This enables on-chain operations for DeFi trading, token transfers, NFT minting, and more.
+Every OpenClaw agent **automatically gets an EVM-compatible crypto wallet** on first startup. The wallet **persists automatically** via the Railway persistent volume - **zero configuration required!**
 
 ## Features
 
-✅ **Auto-generated** - Wallet created automatically on first startup  
+✅ **100% Automatic** - Wallet created and persisted automatically  
+✅ **Zero Configuration** - No environment variables or setup needed  
+✅ **Persistent Volume** - Survives all deployments and restarts  
 ✅ **EVM Compatible** - Works with Ethereum, Polygon, Base, Arbitrum, Optimism, BSC, Avalanche, etc.  
 ✅ **Encrypted Storage** - Private key encrypted at rest using AES-256-GCM  
-✅ **Persistent** - Add to env vars to preserve across deployments  
-✅ **Secure** - Private key never exposed in logs (only shown once at generation)  
+✅ **Secure** - Private key never exposed (only shown once at generation)  
+
+## How It Works
+
+1. **First Deployment**: Agent generates a new wallet and saves to `/data/.openclaw/wallet.json`
+2. **Future Deployments**: Agent loads the same wallet from the persistent volume
+3. **No Action Needed**: Everything happens automatically!
+
+The persistent volume (`/data`) is configured in `railway.toml` and survives all deployments.
 
 ## Quick Start
 
-### 1. Ask Your Agent for Its Wallet
+### 1. Deploy Your Agent
 
-The agent knows its own wallet address! Just ask:
+Just deploy! The wallet is created automatically on first startup.
+
+### 2. Check Deployment Logs
+
+Look for:
+```
+[wallet] ✅ New wallet created!
+[wallet] Address: 0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb
+[wallet] 🔒 Wallet is automatically persisted to the persistent volume.
+[wallet] 🔄 Same wallet will be loaded on future deployments automatically.
+```
+
+### 3. Get Your Agent's Wallet Address
 
 ```bash
 curl -X POST \
@@ -40,12 +61,12 @@ curl -H "Authorization: Bearer YOUR_API_KEY" \
   "initialized": true,
   "address": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb",
   "type": "EVM",
-  "chains": ["Ethereum", "Polygon", "Base", "Arbitrum", "..."],
-  "note": "Fund this address to enable on-chain operations"
+  "chains": ["Ethereum", "Polygon", "Base", "Arbitrum", "Optimism", "BSC", "Avalanche"],
+  "note": "Fund this address with ETH/MATIC/etc to enable crypto trading and on-chain operations"
 }
 ```
 
-### 2. Fund Your Wallet
+### 5. Fund Your Wallet
 
 Send crypto to the wallet address:
 - **Testnets** (for testing): Get free tokens from faucets
@@ -55,50 +76,25 @@ Send crypto to the wallet address:
 
 - **Mainnets** (for production): Send real tokens from an exchange or wallet
 
-### 3. Export Private Key (Optional - for persistence)
+## RaRailway provides automatically**: `RAILWAY_PROJECT_ID`, `RAILWAY_ENVIRONMENT_ID`, `RAILWAY_SERVICE_ID`
+2. **You add**: `RAILWAY_TOKEN` (API token from railway.app/account/tokens)
+3. **On first wallet generation**, the agent checks for these credentials
+4. **If found**, it calls Railway's API to set `AGENT_WALLET_PRIVATE_KEY`
+5. **On next deployment**, the wallet is automatically loaded from env var
 
+### Required Variable for Auto-Config
+
+**Only one variable needed:**
 ```bash
-curl -H "Authorization: Bearer YOUR_API_KEY" \
-  "https://your-agent.up.railway.app/api/wallet/export?confirm=yes"
+RAILWAY_TOKEN=<api-token>              # From railway.app/account/tokens
 ```
 
-⚠️ **Security Warning:** Keep this private! Anyone with the private key controls the funds.
+Railway automatically provides:
+- `RAILWAY_PROJECT_ID` ✅ Auto-provided
+- `RAILWAY_ENVIRONMENT_ID` ✅ Auto-provided
+- `RAILWAY_SERVICE_ID` ✅ Auto-provided
 
-### 4. Persist Across Deployments
-
-Add to Railway environment variables:
-
-```bash
-railway variables set AGENT_WALLET_PRIVATE_KEY="0x..."
-```
-
-Or in Railway dashboard:
-1. Go to Variables tab
-2. Add **AGENT_WALLET_PRIVATE_KEY**
-3. Paste your private key
-4. Save and redeploy
-
-## Using with Skills
-
-### Hyperliquid Trading
-
-```bash
-curl -X POST \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Check my Hyperliquid account balance"}' \
-  https://your-agent.up.railway.app/api/chat
-```
-
-### On-chain Operations
-
-```bash
-curl -X POST \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Send 0.1 ETH to 0x1234... on Base"}' \
-  https://your-agent.up.railway.app/api/chat
-```
+---
 
 ## API Endpoints
 
@@ -110,9 +106,11 @@ Get wallet information (address, supported chains).
 ```json
 {
   "ok": true,
+  "initialized": true,
   "address": "0x...",
   "type": "EVM",
-  "chains": ["Ethereum", "Polygon", "..."]
+  "chains": ["Ethereum", "Polygon", "Base", "Arbitrum", "Optimism", "BSC", "Avalanche"],
+  "note": "Fund this address with ETH/MATIC/etc to enable crypto trading"
 }
 ```
 
@@ -152,51 +150,126 @@ Export the private key. **Use with extreme caution!**
 }
 ```
 
+## Using with Skills
+
+### Hyperliquid Trading
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Check my Hyperliquid account balance"}' \
+  https://your-agent.up.railway.app/api/chat
+```
+
+### On-chain Operations
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Send 0.1 ETH to 0x1234... on Base"}' \
+  https://your-agent.up.railway.app/api/chat
+```
+
 ## Security Best Practices
 
 ### ✅ Do:
-- Export and save private key immediately after first deployment
-- Add private key to Railway environment variables
+- Let the wallet auto-generate on first deployment
+- Fund the wallet address once generated
+- Export private key for backup (optional)
 - Use testnet tokens for testing
 - Start with small amounts on mainnet
-- Monitor wallet balance regularly
 
 ### ❌ Don't:
 - Share your private key with anyone
 - Commit private keys to git
-- Use the same wallet for multiple agents without careful consideration
+- Delete the persistent volume without backing up
 - Fund with large amounts until you've tested thoroughly
 
-## Wallet Storage
+---
 
-Wallets are stored in the persistent volume at:
+## Backup & Restore (Optional)
+
+### Backup Your Wallet
+
+Export the private key for safekeeping:
+
+```bash
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+  "https://your-agent.up.railway.app/api/wallet/export?confirm=yes"
 ```
-/data/.openclaw/wallet.json
+
+Save the private key securely (password manager, hardware wallet, etc.).
+
+### Restore a Wallet
+
+To restore from backup, set the environment variable:
+
+```bash
+# Via Railway CLI
+railway variables set AGENT_WALLET_PRIVATE_KEY="0x..."
+
+# Or via Railway Dashboard
+# Variables tab → Add AGENT_WALLET_PRIVATE_KEY
 ```
 
-The file contains:
-- Wallet address (public)
-- Encrypted private key
-- Encryption metadata
+The agent will load this wallet on next startup.
 
-The private key is encrypted using AES-256-GCM with a key derived from your gateway token.
+---
 
 ## Troubleshooting
 
 ### Wallet shows as "not initialized"
 
-Wait 10-20 seconds after deployment. The wallet is created during server startup.
+**Cause:** Wallet is still being created (happens during server startup).
 
-### Lost private key after redeployment
+**Solution:** Wait 10-20 seconds and check again.
 
-Without a volume or `AGENT_WALLET_PRIVATE_KEY` env var, the wallet is ephemeral. Always:
-1. Export private key after first deployment
-2. Add to Railway environment variables
-3. Or enable persistent volume (already configured in railway.toml)
+### Lost access to wallet
 
-### Need a new wallet
+**If you have the persistent volume:**
+- The wallet is at `/data/.openclaw/wallet.json`
+- It will auto-load on restart
+- No action needed!
 
-Delete `/data/.openclaw/wallet.json` and remove `AGENT_WALLET_PRIVATE_KEY` env var. A new wallet will be generated on next restart.
+**If volume was deleted:**
+- Check deployment logs for the private key (shown once at generation)
+- Or if you backed it up, set `AGENT_WALLET_PRIVATE_KEY` env var
+- Otherwise, a new wallet will be generated
+
+### Want to use a different wallet
+
+**Option 1:** Delete and regenerate
+1. Delete `/data/.openclaw/wallet.json`  
+2. Remove `AGENT_WALLET_PRIVATE_KEY` env var (if set)
+3. Restart - new wallet will be generated
+
+**Option 2:** Import existing wallet
+1. Set `AGENT_WALLET_PRIVATE_KEY="0x..."` env var
+2. Restart - agent will use your wallet
+
+### Volume persistence not working
+
+**Symptoms:** New wallet generated on every deployment
+
+**Possible causes:**
+- Persistent volume not configured correctly
+- Volume was deleted/recreated
+- `railway.toml` not being used
+
+**Solution:** 
+1. Verify `railway.toml` has the volume configuration:
+   ```toml
+   [[volumes]]
+   name = "data"
+   mountPath = "/data"
+   sizeGB = 5
+   ```
+2. Redeploy to apply configuration
+3. As a workaround, set `AGENT_WALLET_PRIVATE_KEY` to persist via env var
+
+---
 
 ## Multi-Chain Support
 

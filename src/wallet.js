@@ -62,15 +62,22 @@ export class AgentWallet {
     
     console.log(`[wallet] ✅ New wallet created!`);
     console.log(`[wallet] Address: ${this.wallet.address}`);
-    console.log(`[wallet] ⚠️  SAVE THIS PRIVATE KEY: Add to Railway env vars as AGENT_WALLET_PRIVATE_KEY`);
-    console.log(`[wallet] Private Key: ${this.wallet.privateKey}`);
-    console.log(`[wallet] (This will only be shown once. Set as env var to persist across deployments)`);
+    console.log(`[wallet] Private Key (backup/export only): ${this.wallet.privateKey}`);
+    console.log(`[wallet] `);
+    console.log(`[wallet] 🔒 Wallet is automatically persisted to the persistent volume.`);
+    console.log(`[wallet] 🔄 Same wallet will be loaded on future deployments automatically.`);
+    console.log(`[wallet] 💾 Stored at: ${this.walletPath}`);
+    console.log(`[wallet] `);
+    console.log(`[wallet] To backup/restore this wallet (optional):`);
+    console.log(`[wallet] 1. Save private key securely`);
+    console.log(`[wallet] 2. Set as env var: AGENT_WALLET_PRIVATE_KEY="${this.wallet.privateKey}"`);
+    console.log(`[wallet] 3. Or export via API: /api/wallet/export?confirm=yes`);
     
     return this.wallet;
   }
 
   /**
-   * Save wallet to encrypted file
+   * Save wallet to encrypted file on persistent volume
    */
   _saveWallet(privateKey) {
     try {
@@ -147,24 +154,21 @@ export class AgentWallet {
     if (!this.wallet) {
       return { initialized: false };
     }
-
+    
     return {
       initialized: true,
       address: this.wallet.address,
       type: "EVM",
-      chains: ["Ethereum", "Polygon", "Base", "Arbitrum", "Optimism", "BSC", "Avalanche", "etc"],
-      note: "Compatible with all EVM chains. Fund this address to enable on-chain operations."
+      chains: [
+        "Ethereum",
+        "Polygon", 
+        "Base",
+        "Arbitrum",
+        "Optimism",
+        "BSC",
+        "Avalanche"
+      ]
     };
-  }
-
-  /**
-   * Get private key (only for authenticated requests)
-   */
-  getPrivateKey() {
-    if (!this.wallet) {
-      throw new Error("Wallet not initialized");
-    }
-    return this.wallet.privateKey;
   }
 
   /**
@@ -178,20 +182,21 @@ export class AgentWallet {
   }
 
   /**
-   * Connect to a provider for on-chain operations
+   * Get private key (use with extreme caution!)
    */
-  connect(rpcUrl) {
+  getPrivateKey() {
     if (!this.wallet) {
       throw new Error("Wallet not initialized");
     }
-    
-    const provider = new ethers.JsonRpcProvider(rpcUrl);
-    return this.wallet.connect(provider);
+    return this.wallet.privateKey;
   }
 }
 
+/**
+ * Initialize wallet singleton
+ */
 export async function initializeWallet(stateDir) {
-  const walletManager = new AgentWallet(stateDir);
-  await walletManager.initialize();
-  return walletManager;
+  const wallet = new AgentWallet(stateDir);
+  await wallet.initialize();
+  return wallet;
 }

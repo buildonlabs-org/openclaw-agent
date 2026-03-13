@@ -47,7 +47,7 @@ Access wallet info from `/data/.openclaw/wallet-info.json`:
 {
   "address": "0x...",
   "type": "EVM",
-  "chains": ["Ethereum", "Polygon", "Base", "..."],
+  "chains": ["Ethereum", "Polygon", "Base", "Arbitrum", "Optimism", "BSC", "Avalanche"],
   "note": "This is the agent's crypto wallet..."
 }
 ```
