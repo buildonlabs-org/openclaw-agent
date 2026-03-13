@@ -33,25 +33,28 @@ RUN npm install -g clawhub
 RUN clawhub --cli-version
 
 # Cache bust for skill installation - change this value to force rebuild
-ARG SKILL_CACHE_VERSION=v7
+ARG SKILL_CACHE_VERSION=v8
 RUN echo "Skill cache version: $SKILL_CACHE_VERSION"
 
 # Pre-install common skills to a cache directory during build
 # This avoids runtime rate limits by bundling skills in the Docker image
+# Add 2-second delays between installs to respect ClawHub rate limits
+# Use || true to continue even if some skills fail (e.g., rate limits)
 RUN mkdir -p /opt/skills-cache && \
-    echo "Installing skills to cache..." && \
-    clawhub install duckduckgo-search --workdir /opt/skills-cache --no-input && \
-    clawhub install weather --workdir /opt/skills-cache --no-input && \
-    clawhub install polymarket-odds --workdir /opt/skills-cache --no-input && \
-    clawhub install hyperliquid-cli --workdir /opt/skills-cache --no-input && \
-    clawhub install onchain --workdir /opt/skills-cache --no-input && \
-    clawhub install postiz --workdir /opt/skills-cache --no-input && \
-    clawhub install find-skills --workdir /opt/skills-cache --no-input && \
-    clawhub install self-improving-agent --workdir /opt/skills-cache --no-input && \
-    clawhub install github --workdir /opt/skills-cache --no-input && \
-    echo "Skill cache created" && \
-    ls -la /opt/skills-cache && \
-    du -sh /opt/skills-cache
+    echo "Installing skills to cache (with rate limit delays)..." && \
+    clawhub install duckduckgo-search --workdir /opt/skills-cache --no-input || echo "⚠ Failed: duckduckgo-search" && sleep 2 && \
+    clawhub install weather --workdir /opt/skills-cache --no-input || echo "⚠ Failed: weather" && sleep 2 && \
+    clawhub install polymarket-odds --workdir /opt/skills-cache --no-input || echo "⚠ Failed: polymarket-odds" && sleep 2 && \
+    clawhub install hyperliquid-cli --workdir /opt/skills-cache --no-input || echo "⚠ Failed: hyperliquid-cli" && sleep 2 && \
+    clawhub install onchain --workdir /opt/skills-cache --no-input || echo "⚠ Failed: onchain" && sleep 2 && \
+    clawhub install postiz --workdir /opt/skills-cache --no-input || echo "⚠ Failed: postiz" && sleep 2 && \
+    clawhub install find-skills --workdir /opt/skills-cache --no-input || echo "⚠ Failed: find-skills" && sleep 2 && \
+    clawhub install self-improving-agent --workdir /opt/skills-cache --no-input || echo "⚠ Failed: self-improving-agent" && sleep 2 && \
+    clawhub install github --workdir /opt/skills-cache --no-input || echo "⚠ Failed: github" && \
+    echo "Skill cache setup complete" && \
+    echo "Installed skills:" && \
+    ls -la /opt/skills-cache/skills 2>/dev/null || echo "(no skills installed)" && \
+    du -sh /opt/skills-cache 2>/dev/null || true
 
 # Add OpenClaw to PATH
 ENV PATH="/root/.local/bin:/root/.openclaw/bin:${PATH}"
