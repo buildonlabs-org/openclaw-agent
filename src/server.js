@@ -2872,7 +2872,27 @@ const server = app.listen(PORT, () => {
     try {
       console.log("[wrapper] initializing agent wallet...");
       agentWallet = await initializeWallet(STATE_DIR);
-      console.log(`[wrapper] wallet ready: ${agentWallet.getInfo().address}`);
+      const walletInfo = agentWallet.getInfo();
+      console.log(`[wrapper] wallet ready: ${walletInfo.address}`);
+      
+      // Expose wallet address to gateway via environment variable
+      // This allows the agent to know and respond with its own wallet address
+      process.env.AGENT_WALLET_ADDRESS = walletInfo.address;
+      
+      // Also write to a file that skills can read
+      try {
+        const walletInfoPath = path.join(STATE_DIR, "wallet-info.json");
+        fs.writeFileSync(walletInfoPath, JSON.stringify({
+          address: walletInfo.address,
+          type: walletInfo.type,
+          chains: walletInfo.chains,
+          note: "This is the agent's crypto wallet. Fund it to enable on-chain operations.",
+          initialized: new Date().toISOString()
+        }, null, 2));
+        console.log(`[wrapper] wallet info written to ${walletInfoPath}`);
+      } catch (err) {
+        console.warn(`[wrapper] failed to write wallet info file: ${err.message}`);
+      }
     } catch (err) {
       console.error(`[wrapper] wallet initialization failed: ${err.message}`);
     }

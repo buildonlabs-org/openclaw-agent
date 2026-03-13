@@ -1,6 +1,41 @@
 # OpenClaw Gateway - Railway Deployment
 
-Deploy an OpenClaw AI gateway to Railway with a **web-based setup wizard** or **headless API** — configure via browser or programmatically!
+Deploy an OpenClaw AI gateway to Railway with:
+- 🔐 **Built-in Crypto Wallet** - Auto-generated EVM wallet, agent knows its address
+- 📦 **Pre-Cached Skills** - Instant install, no ClawHub rate limits
+- 🧙 **Web Setup Wizard** - Configure through browser at `/setup`
+- 🔌 **Headless REST API** - Full programmatic control ([docs](API.md))
+- 🤖 **Multi-Provider Support** - OpenAI, Anthropic, Google Gemini, OpenRouter
+- ⚙️ **Auto-Configuration** - Gateway settings applied automatically
+- 💬 **Channel Integration** - Connect Telegram, Discord bots
+- 🔐 **Device Management** - Approve pairing requests via web UI or API
+- 🎯 **Skill Management** - Install, update, and manage ClawHub skills via API
+- 💬 **Chat API** - Send messages to your agent and receive responses
+- 💾 **Persistent State** - Configuration survives redeploys with Railway volumes
+
+## ✨ New Features
+
+### 🔐 Crypto Wallet
+
+Your agent automatically gets an EVM wallet and can tell you its address when asked!
+
+```bash
+# Ask your agent for its wallet
+curl -X POST \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "What is your wallet address?"}' \
+  https://your-agent.up.railway.app/api/chat
+```
+
+See [CRYPTO-WALLET.md](CRYPTO-WALLET.md) for details.
+
+### 📦 Pre-Cached Skills
+
+Common skills install instantly (no ClawHub rate limits):
+`duckduckgo-search`, `hyperliquid-cli`, `onchain`, `polymarket-odds`, `weather`, `postiz`, `github`, and more.
+
+Customize in [Dockerfile](Dockerfile).
 
 ## ✨ Features
 

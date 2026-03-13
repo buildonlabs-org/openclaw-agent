@@ -14,7 +14,19 @@ Every OpenClaw agent automatically gets an **EVM-compatible crypto wallet** on f
 
 ## Quick Start
 
-### 1. Get Your Agent's Wallet Address
+### 1. Ask Your Agent for Its Wallet
+
+The agent knows its own wallet address! Just ask:
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "What is your crypto wallet address?"}' \
+  https://your-agent.up.railway.app/api/chat
+```
+
+Or via API:
 
 ```bash
 curl -H "Authorization: Bearer YOUR_API_KEY" \
