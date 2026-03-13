@@ -129,8 +129,8 @@ export class OpenClawGatewayClient {
     // Wait until ready
     const start = Date.now();
     while (!this.ready) {
-      if (Date.now() - start > 10_000) {
-        console.error(`[gateway] Connection timeout after 10s`);
+      if (Date.now() - start > 30_000) {  // Increased from 10s to 30s for device pairing
+        console.error(`[gateway] Connection timeout after 30s`);
         throw new Error("Gateway connect timeout");
       }
       await sleep(50);

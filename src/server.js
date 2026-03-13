@@ -218,15 +218,16 @@ async function startGateway() {
     console.log(`[gateway] device pairing config warning: ${err.message}`);
   }
 
-  // Alternative: allow unpaired device connections
+  // Note: We handle auto-approval in the wrapper's checkAndApproveDevices loop
+  // Don't enable gateway's built-in autoApprove to avoid race conditions
   try {
     await runCmd(OPENCLAW_CLI, [
       "config",
       "set",
       "gateway.devices.autoApprove",
-      "true",
+      "false",
     ]);
-    console.log("[gateway] device auto-approve enabled");
+    console.log("[gateway] gateway built-in auto-approve disabled (wrapper handles it)");
   } catch (err) {
     console.log(`[gateway] device auto-approve config warning: ${err.message}`);
   }
@@ -349,18 +350,34 @@ async function ensureGatewayRunning() {
               return;
             }
             
-            // Parse output for pending devices - extract UUIDs from table rows
+            // Parse output for pending devices - ONLY from Pending section
             const lines = output.split('\n');
             const pendingRequestIds = [];
+            let inPendingSection = false;
             
             for (const line of lines) {
               if (!line.trim()) continue;
-              // Look for table rows with UUIDs in first column: │ <uuid> │
-              const uuidMatch = line.match(/│\s*([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\s*│/i);
-              if (uuidMatch) {
-                const requestId = uuidMatch[1];
-                console.log(`[gateway] Found pending request: ${requestId}`);
-                pendingRequestIds.push(requestId);
+              
+              // Detect Pending section start
+              if (line.includes('Pending (')) {
+                inPendingSection = true;
+                continue;
+              }
+              
+              // Detect section end (next table header or "Paired" section)
+              if (inPendingSection && (line.includes('Paired (') || line.match(/^[└┴]/))) {
+                inPendingSection = false;
+                break;
+              }
+              
+              // Only extract UUIDs from Pending section
+              if (inPendingSection) {
+                const uuidMatch = line.match(/│\s*([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\s*│/i);
+                if (uuidMatch) {
+                  const requestId = uuidMatch[1];
+                  console.log(`[gateway] Found pending request: ${requestId}`);
+                  pendingRequestIds.push(requestId);
+                }
               }
             }
             
@@ -387,7 +404,13 @@ async function ensureGatewayRunning() {
                 if (approveResult.code === 0) {
                   console.log(`[gateway] ✅ Request ${requestId} approved with operator role`);
                 } else {
-                  console.warn(`[gateway] ⚠️  Approval returned code ${approveResult.code}: ${approveResult.output}`);
+                  // Only log warnings for real errors, not "unknown requestId" (already processed)
+                  const isAlreadyProcessed = approveResult.output?.includes('unknown requestId');
+                  if (isAlreadyProcessed) {
+                    console.log(`[gateway] ℹ️  Request ${requestId} was already processed`);
+                  } else {
+                    console.warn(`[gateway] ⚠️  Approval returned code ${approveResult.code}: ${approveResult.output}`);
+                  }
                 }
               } catch (approveErr) {
                 console.error(`[gateway] ❌ Failed to approve request ${requestId}: ${approveErr.message}`);
@@ -450,7 +473,7 @@ async function ensureGatewayRunning() {
         setTimeout(async () => {
           await revokeIncorrectDevices();
           checkAndApproveDevices();  // Check immediately after revoke
-          setInterval(checkAndApproveDevices, 3000);  // Then every 3 seconds
+          setInterval(checkAndApproveDevices, 5000);  // Then every 5 seconds
         }, 1000);
       }
     } finally {
@@ -2626,6 +2649,15 @@ proxy.on("proxyReqWs", (proxyReq, req, socket, options, head) => {
 
 // Main request handler
 app.use(async (req, res) => {
+  // API routes should be handled by their specific handlers above
+  // If we reach here with /api/* path, it means no handler matched
+  if (req.path.startsWith("/api/")) {
+    return res.status(404).json({ 
+      ok: false, 
+      error: "Endpoint not found" 
+    });
+  }
+  
   if (!isConfigured() && !req.path.startsWith("/setup")) {
     return res.redirect("/setup");
   }
