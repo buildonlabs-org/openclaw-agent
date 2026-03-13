@@ -365,16 +365,28 @@ async function ensureGatewayRunning() {
             
             console.log(`[gateway] Found ${pendingRequestIds.length} pending request(s)`);
             
-            // Auto-approve each pending device request
+            // Auto-approve each pending device request with operator role and scopes
             for (const requestId of pendingRequestIds) {
               console.log(`[gateway] 🔓 Auto-approving request: ${requestId}`);
               try {
-                const approveResult = await runCmd(OPENCLAW_CLI, ["devices", "approve", requestId]);
+                // Try with role and scopes first
+                let approveResult = await runCmd(OPENCLAW_CLI, [
+                  "devices", "approve", requestId,
+                  "--role", "operator",
+                  "--scopes", "operator.read,operator.write,operator.admin"
+                ]);
+                
+                // If flags not supported, try simple approve
+                if (approveResult.code !== 0 && approveResult.output?.includes('unknown option')) {
+                  console.log(`[gateway] Role/scope flags not supported, trying simple approve...`);
+                  approveResult = await runCmd(OPENCLAW_CLI, ["devices", "approve", requestId]);
+                }
+                
                 console.log(`[gateway] Approve result code: ${approveResult.code}`);
                 if (approveResult.code === 0) {
-                  console.log(`[gateway] ✅ Request ${requestId} approved successfully`);
+                  console.log(`[gateway] ✅ Request ${requestId} approved with operator role`);
                 } else {
-                  console.warn(`[gateway] ⚠️  Approval returned code ${approveResult.code}`);
+                  console.warn(`[gateway] ⚠️  Approval returned code ${approveResult.code}: ${approveResult.output}`);
                 }
               } catch (approveErr) {
                 console.error(`[gateway] ❌ Failed to approve request ${requestId}: ${approveErr.message}`);
@@ -385,9 +397,60 @@ async function ensureGatewayRunning() {
           }
         };
         
-        // Check immediately after 1 second and then every 3 seconds
-        setTimeout(checkAndApproveDevices, 1000);
-        setInterval(checkAndApproveDevices, 3000);
+        // Check for devices missing correct scopes and revoke them
+        const revokeIncorrectDevices = async () => {
+          try {
+            console.log(`[gateway] Checking for devices with incorrect scopes...`);
+            const result = await runCmd(OPENCLAW_CLI, ["devices", "list"]);
+            const output = result.output || "";
+            
+            if (!output.includes('Paired')) {
+              console.log(`[gateway] No paired devices found`);
+              return;
+            }
+            
+            // Parse table looking for devices in "Paired" section
+            const lines = output.split('\n');
+            let inPairedSection = false;
+            
+            for (const line of lines) {
+              if (line.includes('Paired (')) {
+                inPairedSection = true;
+                continue;
+              }
+              if (inPairedSection && line.includes('├─') || line.includes('└─')) {
+                break;  // End of paired section
+              }
+              
+              if (inPairedSection && line.includes('│')) {
+                // Extract device ID (first column after │)
+                const deviceMatch = line.match(/│\s*([a-f0-9]{20,})\s*│/i);
+                if (!deviceMatch) continue;
+                
+                const deviceId = deviceMatch[1];
+                // Check if line contains operator.write scope
+                if (!line.includes('operator.write')) {
+                  console.log(`[gateway] 🗑️  Revoking device ${deviceId} (missing operator.write scope)`);
+                  try {
+                    await runCmd(OPENCLAW_CLI, ["devices", "revoke", deviceId]);
+                    console.log(`[gateway] ✅ Device ${deviceId} revoked, will re-pair with correct scopes`);
+                  } catch (revokeErr) {
+                    console.error(`[gateway] ❌ Failed to revoke ${deviceId}: ${revokeErr.message}`);
+                  }
+                }
+              }
+            }
+          } catch (err) {
+            console.error(`[gateway] Error checking device scopes: ${err.message}`);
+          }
+        };
+        
+        // Revoke devices with incorrect scopes, then start auto-approval loop
+        setTimeout(async () => {
+          await revokeIncorrectDevices();
+          checkAndApproveDevices();  // Check immediately after revoke
+          setInterval(checkAndApproveDevices, 3000);  // Then every 3 seconds
+        }, 1000);
       }
     } finally {
       gatewayStarting = null;
@@ -1756,12 +1819,22 @@ app.get("/api/devices", requireApiKey, async (_req, res) => {
 
 app.post("/api/devices/approve", requireApiKey, async (req, res) => {
   try {
-    const { requestId } = req.body;
+    const { requestId, role, scopes } = req.body;
     if (!requestId) {
       return res.status(400).json({ success: false, error: "Missing requestId" });
     }
     
-    const result = await runCmd(OPENCLAW_CLI, ["devices", "approve", requestId]);
+    // Build approve command with optional role and scopes
+    const approveArgs = ["devices", "approve", requestId];
+    if (role) {
+      approveArgs.push("--role", role);
+    }
+    if (scopes) {
+      const scopesStr = Array.isArray(scopes) ? scopes.join(',') : scopes;
+      approveArgs.push("--scopes", scopesStr);
+    }
+    
+    const result = await runCmd(OPENCLAW_CLI, approveArgs);
     res.json({ 
       success: result.code === 0, 
       message: `Device ${requestId} approved`,
