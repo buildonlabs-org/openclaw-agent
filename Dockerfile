@@ -26,32 +26,21 @@ ENV OPENCLAW_SKIP_SETUP=1 \
 # The install itself succeeds, just the post-install setup fails in Docker
 RUN curl -fsSL https://openclaw.ai/install.sh | bash || echo "Install script exit code: $? (expected if tty setup fails)"
 
-# Install ClawHub CLI for skill management
-RUN npm install -g clawhub || pnpm add -g clawhub || echo "ClawHub CLI install failed, will skip skill features"
+# Check if OpenClaw includes clawhub or if skills command is available
+RUN echo "Checking for skill management commands..." && \
+    openclaw --help | grep -i skill || echo "No skill command found in openclaw" && \
+    openclaw --help || true
 
-# Verify ClawHub works before trying to use it
-RUN echo "Verifying ClawHub installation..." && \
-    which clawhub && \
-    clawhub --version || echo "ClawHub not working"
+# Try installing clawhub as npm package (may not exist)
+RUN npm install -g clawhub 2>&1 || echo "ClawHub npm package not available"
 
 # Cache bust for skill installation - change this value to force rebuild
-ARG SKILL_CACHE_VERSION=v4
+ARG SKILL_CACHE_VERSION=v5
 RUN echo "Skill cache version: $SKILL_CACHE_VERSION"
 
-# Pre-install common skills to a cache directory during build
-# This avoids runtime rate limits by bundling skills in the Docker image
-# Add/remove skills from this list as needed for your use case
-RUN set -x && \
-    mkdir -p /opt/skills-cache && \
-    echo "Pre-downloading common skills to avoid ClawHub rate limits..." && \
-    echo "Testing ClawHub installation with verbose output..." && \
-    clawhub --version && \
-    echo "Installing first skill (will show errors if any)..." && \
-    clawhub install duckduckgo-search --workdir /opt/skills-cache --no-input && \
-    echo "✓ duckduckgo-search installed" && \
-    ls -la /opt/skills-cache && \
-    echo "Skill cache created at /opt/skills-cache" && \
-    du -sh /opt/skills-cache 2>/dev/null || true
+# Skip skill pre-caching for now - clawhub CLI not available
+RUN echo "Skill pre-caching skipped - ClawHub CLI not available" && \
+    echo "Skills will be installed at runtime via ClawHub API instead"
 
 # Add OpenClaw to PATH
 ENV PATH="/root/.local/bin:/root/.openclaw/bin:${PATH}"
