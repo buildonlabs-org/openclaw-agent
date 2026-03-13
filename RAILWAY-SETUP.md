@@ -46,6 +46,17 @@ railway variables set BRAVE_API_KEY="your_brave_api_key"
 
 Get free Brave Search API key: https://brave.com/search/api/ (2,000 queries/month free)
 
+**Optional (for persistent wallet across deployments):**
+
+```bash
+# After first deployment, get your wallet private key:
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+  "https://your-app.up.railway.app/api/wallet/export?confirm=yes"
+
+# Then set it as env var to persist across deployments:
+railway variables set AGENT_WALLET_PRIVATE_KEY="0x..."
+```
+
 **Optional (for specific AI models):**
 
 ```bash
@@ -115,9 +126,69 @@ All `/api/*` endpoints require `Authorization: Bearer YOUR_WRAPPER_API_KEY` head
 |----------|--------|-------------|
 | `/api/chat` | POST | Send message to agent |
 | `/api/skills` | GET | List installed skills |
-| `/api/skills/install` | POST | Install a skill |
+| `/api/skills/cache` | GET | List pre-cached skills (instant install) |
+| `/api/skills/install` | POST | Install a skill (uses cache if available) |
 | `/api/devices` | GET | List paired devices |
 | `/api/status` | GET | Get agent status |
+| `/api/wallet` | GET | Get agent's crypto wallet info |
+| `/api/wallet/sign` | POST | Sign a message with agent's wallet |
+| `/api/wallet/export` | GET | Export wallet private key (requires ?confirm=yes) |
+
+### Crypto Wallet
+
+Every agent automatically gets an EVM-compatible wallet (Ethereum, Polygon, Base, Arbitrum, etc.) on first startup.
+
+**Get wallet address:**
+```bash
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+  https://your-app.up.railway.app/api/wallet
+```
+
+**Export private key (to persist across deployments):**
+```bash
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+  "https://your-app.up.railway.app/api/wallet/export?confirm=yes"
+```
+
+**Fund the wallet:**
+Send ETH, MATIC, or other tokens to the wallet address to enable on-chain operations with skills like `hyperliquid-cli`, `onchain`, etc.
+
+**Persist wallet across deployments:**
+Add the private key to Railway environment variables:
+```bash
+railway variables set AGENT_WALLET_PRIVATE_KEY="0x..."
+```
+
+### Pre-Cached Skills
+
+To avoid ClawHub rate limits, common skills are pre-installed in the Docker image at build time. These can be installed instantly without hitting ClawHub:
+
+**Check cached skills:**
+```bash
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+  https://your-app.up.railway.app/api/skills/cache
+```
+
+**Install from cache (instant, no rate limits):**
+```bash
+curl -X POST \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"slug": "duckduckgo-search"}' \
+  https://your-app.up.railway.app/api/skills/install
+```
+
+The install endpoint automatically uses the cache if available, falling back to ClawHub only when necessary.
+
+**Customize cached skills:**
+
+Edit the `Dockerfile` and add/remove skills from the pre-cache section:
+
+```dockerfile
+clawhub install your-skill-name --workdir /opt/skills-cache --no-input || echo "Skipped: your-skill-name" && \
+```
+
+Rebuild and redeploy to include your custom skill selection.
 
 See [API.md](API.md) for complete API documentation.
 

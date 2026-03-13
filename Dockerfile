@@ -29,6 +29,27 @@ RUN curl -fsSL https://openclaw.ai/install.sh | bash || echo "Install script exi
 # Install ClawHub CLI for skill management
 RUN npm install -g clawhub || pnpm add -g clawhub || echo "ClawHub CLI install failed, will skip skill features"
 
+# Pre-install common skills to a cache directory during build
+# This avoids runtime rate limits by bundling skills in the Docker image
+# Add/remove skills from this list as needed for your use case
+RUN mkdir -p /opt/skills-cache && \
+    echo "Pre-downloading common skills to avoid ClawHub rate limits..." && \
+    export OPENCLAW_WORKSPACE_DIR=/opt/skills-cache && \
+    # Install common skills to cache (done during build, no rate limit during runtime)
+    clawhub install duckduckgo-search --workdir /opt/skills-cache --no-input || echo "Skipped: duckduckgo-search" && \
+    clawhub install weather --workdir /opt/skills-cache --no-input || echo "Skipped: weather" && \
+    clawhub install polymarket-odds --workdir /opt/skills-cache --no-input || echo "Skipped: polymarket-odds" && \
+    clawhub install hyperliquid-cli --workdir /opt/skills-cache --no-input || echo "Skipped: hyperliquid-cli" && \
+    clawhub install onchain --workdir /opt/skills-cache --no-input || echo "Skipped: onchain" && \
+    clawhub install postiz --workdir /opt/skills-cache --no-input || echo "Skipped: postiz" && \
+    clawhub install find-skills --workdir /opt/skills-cache --no-input || echo "Skipped: find-skills" && \
+    clawhub install self-improving-agent --workdir /opt/skills-cache --no-input || echo "Skipped: self-improving-agent" && \
+    clawhub install github --workdir /opt/skills-cache --no-input || echo "Skipped: github" && \
+    # Add more skills here as needed:
+    # clawhub install <skill-name> --workdir /opt/skills-cache --no-input || echo "Skipped: <skill-name>" && \
+    echo "Skill cache created at /opt/skills-cache" && \
+    du -sh /opt/skills-cache 2>/dev/null || true
+
 # Add OpenClaw to PATH
 ENV PATH="/root/.local/bin:/root/.openclaw/bin:${PATH}"
 

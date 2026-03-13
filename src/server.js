@@ -11,6 +11,7 @@ import httpProxy from "http-proxy";
 import { WebSocketServer } from "ws";
 
 import { OpenClawGatewayClient } from "./gatewayClient.js";
+import { initializeWallet } from "./wallet.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -2174,6 +2175,42 @@ app.get("/api/skills/search", requireApiKey, async (req, res) => {
   }
 });
 
+// GET /api/skills/cache - List pre-built cached skills (no ClawHub request)
+app.get("/api/skills/cache", requireApiKey, async (_req, res) => {
+  try {
+    const SKILLS_CACHE = "/opt/skills-cache";
+    const cached = [];
+    
+    if (fs.existsSync(SKILLS_CACHE)) {
+      const entries = fs.readdirSync(SKILLS_CACHE, { withFileTypes: true });
+      
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          cached.push({
+            slug: entry.name,
+            path: path.join(SKILLS_CACHE, entry.name),
+            source: 'pre-built'
+          });
+        }
+      }
+    }
+    
+    res.json({
+      ok: true,
+      cached,
+      count: cached.length,
+      message: cached.length > 0 
+        ? `${cached.length} skill(s) available in cache (instant install, no rate limits)` 
+        : 'No cached skills available'
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message 
+    });
+  }
+});
+
 // POST /api/skills/install - Install a skill
 app.post("/api/skills/install", requireApiKey, async (req, res) => {
   try {
@@ -2183,6 +2220,38 @@ app.post("/api/skills/install", requireApiKey, async (req, res) => {
       return res.status(400).json({ ok: false, error: 'Missing required field: slug' });
     }
     
+    // Check if skill exists in pre-built cache (avoids ClawHub rate limits)
+    const SKILLS_CACHE = "/opt/skills-cache";
+    const cachedSkillPath = path.join(SKILLS_CACHE, slug);
+    
+    if (fs.existsSync(cachedSkillPath) && !force) {
+      console.log(`[api/skills/install] Using cached skill: ${slug}`);
+      
+      // Copy from cache to workspace
+      const targetPath = path.join(WORKSPACE_DIR, slug);
+      try {
+        // Use cp command for reliable copying
+        const copyResult = await runCmd("cp", ["-r", cachedSkillPath, targetPath]);
+        
+        if (copyResult.code === 0) {
+          return res.json({
+            ok: true,
+            slug,
+            version: version || 'cached',
+            output: `Installed ${slug} from pre-built cache (no ClawHub request needed)`,
+            exitCode: 0,
+            source: 'cache',
+            attempts: 1
+          });
+        } else {
+          console.warn(`[api/skills/install] Cache copy failed, falling back to ClawHub`);
+        }
+      } catch (cacheErr) {
+        console.warn(`[api/skills/install] Cache error: ${cacheErr.message}, falling back to ClawHub`);
+      }
+    }
+    
+    // Fall back to ClawHub if not in cache or copy failed
     const CLAWHUB_CLI = process.env.CLAWHUB_CLI?.trim() || "clawhub";
     const args = ["install", String(slug), "--workdir", WORKSPACE_DIR, "--no-input"];
     
@@ -2217,6 +2286,7 @@ app.post("/api/skills/install", requireApiKey, async (req, res) => {
           version: version || 'latest',
           output: result.output,
           exitCode: result.code,
+          source: 'clawhub',
           attempts: attempt + 1
         });
       }
@@ -2350,6 +2420,107 @@ app.post("/api/admin/restart", requireApiKey, async (req, res) => {
       } catch (err) {
         console.error("[api/admin/restart] Error restarting Gateway:", err);
       }
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message 
+    });
+  }
+});
+
+// ===== CRYPTO WALLET API ROUTES =====
+
+// GET /api/wallet - Get wallet info (public address, chains supported)
+app.get("/api/wallet", requireApiKey, async (_req, res) => {
+  try {
+    if (!agentWallet) {
+      return res.status(503).json({
+        ok: false,
+        error: 'Wallet not initialized yet. Wait for agent startup to complete.',
+        initialized: false
+      });
+    }
+    
+    const info = agentWallet.getInfo();
+    res.json({
+      ok: true,
+      ...info,
+      funded: false, // Placeholder - would need to check balance on-chain
+      note: "Fund this address with ETH/MATIC/etc to enable crypto trading and on-chain operations"
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message 
+    });
+  }
+});
+
+// POST /api/wallet/sign - Sign a message with agent's wallet
+app.post("/api/wallet/sign", requireApiKey, async (req, res) => {
+  try {
+    const { message } = req.body || {};
+    
+    if (!message) {
+      return res.status(400).json({ 
+        ok: false, 
+        error: 'Missing required field: message' 
+      });
+    }
+    
+    if (!agentWallet) {
+      return res.status(503).json({
+        ok: false,
+        error: 'Wallet not initialized'
+      });
+    }
+    
+    const signature = await agentWallet.signMessage(message);
+    
+    res.json({
+      ok: true,
+      message,
+      signature,
+      address: agentWallet.wallet.address
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message 
+    });
+  }
+});
+
+// GET /api/wallet/export - Export private key (use with caution!)
+app.get("/api/wallet/export", requireApiKey, async (req, res) => {
+  try {
+    // Additional security: require explicit confirmation param
+    const { confirm } = req.query;
+    
+    if (confirm !== 'yes') {
+      return res.status(400).json({
+        ok: false,
+        error: 'This endpoint exports your private key. Add ?confirm=yes to proceed.',
+        warning: '⚠️  Never share your private key. Anyone with it can control your funds.'
+      });
+    }
+    
+    if (!agentWallet) {
+      return res.status(503).json({
+        ok: false,
+        error: 'Wallet not initialized'
+      });
+    }
+    
+    const privateKey = agentWallet.getPrivateKey();
+    
+    res.json({
+      ok: true,
+      address: agentWallet.wallet.address,
+      privateKey,
+      warning: '⚠️  KEEP THIS PRIVATE! Save to Railway env var: AGENT_WALLET_PRIVATE_KEY',
+      instructions: 'Add this to Railway Variables to persist wallet across deployments'
     });
   } catch (error) {
     res.status(500).json({ 
@@ -2687,6 +2858,9 @@ app.use(async (req, res) => {
   return proxy.web(req, res, { target: GATEWAY_TARGET });
 });
 
+// Global wallet instance
+let agentWallet = null;
+
 const server = app.listen(PORT, () => {
   console.log(`[wrapper] listening on port ${PORT}`);
   console.log(`[wrapper] setup wizard: http://localhost:${PORT}/setup`);
@@ -2703,6 +2877,16 @@ const server = app.listen(PORT, () => {
       } catch (err) {
         console.warn(`[wrapper] doctor --fix failed: ${err.message}`);
       }
+      
+      // Initialize crypto wallet for agent
+      try {
+        console.log("[wrapper] initializing agent wallet...");
+        agentWallet = await initializeWallet(STATE_DIR);
+        console.log(`[wrapper] wallet ready: ${agentWallet.getInfo().address}`);
+      } catch (err) {
+        console.error(`[wrapper] wallet initialization failed: ${err.message}`);
+      }
+      
       await ensureGatewayRunning();
     })().catch((err) => {
       console.error(`[wrapper] failed to start gateway at boot: ${err.message}`);
