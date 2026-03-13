@@ -27,7 +27,29 @@ ENV OPENCLAW_SKIP_SETUP=1 \
 RUN curl -fsSL https://openclaw.ai/install.sh | bash || echo "Install script exit code: $? (expected if tty setup fails)"
 
 # Install ClawHub CLI for skill management
-RUN npm install -g clawhub || pnpm add -g clawhub || echo "ClawHub CLI install failed, will skip skill features"
+RUN npm install -g clawhub
+
+# Verify ClawHub works
+RUN clawhub --cli-version
+
+# Cache bust for skill installation - change this value to force rebuild
+ARG SKILL_CACHE_VERSION=v8
+RUN echo "Skill cache version: $SKILL_CACHE_VERSION"
+
+# Pre-install common skills to a cache directory during build
+# This avoids runtime rate limits by bundling skills in the Docker image
+# Add 2-second delays between installs to respect ClawHub rate limits
+# Use || true to continue even if some skills fail (e.g., rate limits)
+RUN mkdir -p /opt/skills-cache && \
+    echo "Installing skills to cache (with rate limit delays)..." && \
+    clawhub install duckduckgo-search --workdir /opt/skills-cache --no-input || echo "⚠ Failed: duckduckgo-search" && sleep 2 && \
+    clawhub install polymarket-odds --workdir /opt/skills-cache --no-input || echo "⚠ Failed: polymarket-odds" && sleep 2 && \
+    clawhub install hyperliquid-cli --workdir /opt/skills-cache --no-input || echo "⚠ Failed: hyperliquid-cli" && sleep 2 && \
+    clawhub install onchain --workdir /opt/skills-cache --no-input || echo "⚠ Failed: onchain" && sleep 2 && \
+    echo "Skill cache setup complete" && \
+    echo "Installed skills:" && \
+    ls -la /opt/skills-cache/skills 2>/dev/null || echo "(no skills installed)" && \
+    du -sh /opt/skills-cache 2>/dev/null || true
 
 # Add OpenClaw to PATH
 ENV PATH="/root/.local/bin:/root/.openclaw/bin:${PATH}"

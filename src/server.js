@@ -11,6 +11,7 @@ import httpProxy from "http-proxy";
 import { WebSocketServer } from "ws";
 
 import { OpenClawGatewayClient } from "./gatewayClient.js";
+import { initializeWallet } from "./wallet.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -46,6 +47,7 @@ const WRAPPER_API_KEY = process.env.WRAPPER_API_KEY?.trim() || OPENCLAW_GATEWAY_
 const INTERNAL_GATEWAY_PORT = Number.parseInt(process.env.INTERNAL_GATEWAY_PORT ?? "18789", 10);
 const INTERNAL_GATEWAY_HOST = process.env.INTERNAL_GATEWAY_HOST ?? "127.0.0.1";
 const GATEWAY_TARGET = `http://${INTERNAL_GATEWAY_HOST}:${INTERNAL_GATEWAY_PORT}`;
+const SKILLS_CACHE = "/opt/skills-cache/skills";
 
 // Use openclaw CLI binary (installed via install.sh)
 const OPENCLAW_CLI = process.env.OPENCLAW_CLI?.trim() || "openclaw";
@@ -503,6 +505,55 @@ async function restartGateway() {
     await sleep(500);
   }
   await ensureGatewayRunning();
+}
+
+// Copy cached skills from Docker image to workspace on startup
+async function copyCachedSkillsToWorkspace() {
+  try {
+    // Check if cache directory exists
+    if (!fs.existsSync(SKILLS_CACHE)) {
+      console.log("[skills] no skill cache found at", SKILLS_CACHE);
+      return { copied: 0, skipped: 0, errors: 0 };
+    }
+
+    const targetDir = path.join(WORKSPACE_DIR, 'skills');
+    fs.mkdirSync(targetDir, { recursive: true });
+
+    const cachedSkills = fs.readdirSync(SKILLS_CACHE, { withFileTypes: true })
+      .filter(entry => entry.isDirectory() && !entry.name.startsWith('.'))
+      .map(entry => entry.name);
+
+    let copied = 0;
+    let skipped = 0;
+    let errors = 0;
+
+    for (const skillName of cachedSkills) {
+      const targetPath = path.join(targetDir, skillName);
+      
+      // Skip if already exists in workspace (user may have modified it)
+      if (fs.existsSync(targetPath)) {
+        skipped++;
+        continue;
+      }
+
+      try {
+        const sourcePath = path.join(SKILLS_CACHE, skillName);
+        
+        // Copy skill directory recursively
+        fs.cpSync(sourcePath, targetPath, { recursive: true });
+        copied++;
+        console.log(`[skills] installed from cache: ${skillName}`);
+      } catch (err) {
+        console.error(`[skills] failed to copy ${skillName}: ${err.message}`);
+        errors++;
+      }
+    }
+
+    return { copied, skipped, errors, total: cachedSkills.length };
+  } catch (err) {
+    console.error(`[skills] cache copy failed: ${err.message}`);
+    return { copied: 0, skipped: 0, errors: 1 };
+  }
 }
 
 // Rate limiter for setup endpoints
@@ -2174,6 +2225,145 @@ app.get("/api/skills/search", requireApiKey, async (req, res) => {
   }
 });
 
+// GET /api/skills/cache - List pre-built cached skills (no ClawHub request)
+app.get("/api/skills/cache", requireApiKey, async (_req, res) => {
+  try {
+    // ClawHub installs to <workdir>/skills/, so check there
+    const cached = [];
+    const debug = {};
+    
+    // Debug info
+    debug.skillsCachePath = SKILLS_CACHE;
+    debug.skillsCacheExists = fs.existsSync(SKILLS_CACHE);
+    
+    // Check parent directory
+    const parentDir = path.dirname(SKILLS_CACHE);
+    debug.parentDir = parentDir;
+    debug.parentDirExists = fs.existsSync(parentDir);
+    if (debug.parentDirExists) {
+      try {
+        debug.parentDirContents = fs.readdirSync(parentDir).join(', ');
+      } catch (err) {
+        debug.parentDirError = err.message;
+      }
+    }
+    
+    if (fs.existsSync(SKILLS_CACHE)) {
+      const entries = fs.readdirSync(SKILLS_CACHE, { withFileTypes: true });
+      debug.cacheEntries = entries.map(e => `${e.name} (${e.isDirectory() ? 'dir' : 'file'})`).join(', ');
+      
+      for (const entry of entries) {
+        if (entry.isDirectory() && !entry.name.startsWith('.')) {
+          cached.push({
+            slug: entry.name,
+            path: path.join(SKILLS_CACHE, entry.name),
+            source: 'pre-built'
+          });
+        }
+      }
+    }
+    
+    res.json({
+      ok: true,
+      cached,
+      count: cached.length,
+      message: cached.length > 0 
+        ? `${cached.length} skill(s) available in cache (instant install, no rate limits)` 
+        : 'No cached skills available',
+      debug
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message 
+    });
+  }
+});
+
+// GET /api/skills/:slug/files - List files in a skill directory
+app.get("/api/skills/:slug/files", requireApiKey, async (req, res) => {
+  try {
+    const { slug } = req.params;
+    const skillPath = path.join(WORKSPACE_DIR, 'skills', slug);
+    
+    if (!fs.existsSync(skillPath)) {
+      return res.status(404).json({ 
+        ok: false, 
+        error: `Skill '${slug}' not found` 
+      });
+    }
+    
+    const files = fs.readdirSync(skillPath, { withFileTypes: true })
+      .map(entry => ({
+        name: entry.name,
+        type: entry.isDirectory() ? 'directory' : 'file',
+        path: path.join(skillPath, entry.name)
+      }));
+    
+    res.json({
+      ok: true,
+      slug,
+      path: skillPath,
+      files
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message 
+    });
+  }
+});
+
+// GET /api/skills/:slug/files/:filename - Read a specific file from a skill
+app.get("/api/skills/:slug/files/:filename", requireApiKey, async (req, res) => {
+  try {
+    const { slug, filename } = req.params;
+    const skillPath = path.join(WORKSPACE_DIR, 'skills', slug);
+    const filePath = path.join(skillPath, filename);
+    
+    // Security: ensure the file is within the skill directory
+    const normalizedSkillPath = path.normalize(skillPath);
+    const normalizedFilePath = path.normalize(filePath);
+    if (!normalizedFilePath.startsWith(normalizedSkillPath)) {
+      return res.status(403).json({ 
+        ok: false, 
+        error: 'Access denied: path traversal not allowed' 
+      });
+    }
+    
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ 
+        ok: false, 
+        error: `File '${filename}' not found in skill '${slug}'` 
+      });
+    }
+    
+    const stats = fs.statSync(filePath);
+    if (!stats.isFile()) {
+      return res.status(400).json({ 
+        ok: false, 
+        error: `'${filename}' is not a file` 
+      });
+    }
+    
+    const content = fs.readFileSync(filePath, 'utf8');
+    
+    res.json({
+      ok: true,
+      slug,
+      filename,
+      path: filePath,
+      size: stats.size,
+      content
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message 
+    });
+  }
+});
+
 // POST /api/skills/install - Install a skill
 app.post("/api/skills/install", requireApiKey, async (req, res) => {
   try {
@@ -2183,6 +2373,40 @@ app.post("/api/skills/install", requireApiKey, async (req, res) => {
       return res.status(400).json({ ok: false, error: 'Missing required field: slug' });
     }
     
+    // Check if skill exists in pre-built cache (avoids ClawHub rate limits)
+    // ClawHub installs to <workdir>/skills/, so check there
+    const cachedSkillPath = path.join(SKILLS_CACHE, slug);
+    
+    if (fs.existsSync(cachedSkillPath) && !force) {
+      console.log(`[api/skills/install] Using cached skill: ${slug}`);
+      
+      // Copy from cache to workspace/skills directory
+      const skillsDir = path.join(WORKSPACE_DIR, 'skills');
+      fs.mkdirSync(skillsDir, { recursive: true });
+      const targetPath = path.join(skillsDir, slug);
+      try {
+        // Use cp command for reliable copying
+        const copyResult = await runCmd("cp", ["-r", cachedSkillPath, targetPath]);
+        
+        if (copyResult.code === 0) {
+          return res.json({
+            ok: true,
+            slug,
+            version: version || 'cached',
+            output: `Installed ${slug} from pre-built cache (no ClawHub request needed)`,
+            exitCode: 0,
+            source: 'cache',
+            attempts: 1
+          });
+        } else {
+          console.warn(`[api/skills/install] Cache copy failed, falling back to ClawHub`);
+        }
+      } catch (cacheErr) {
+        console.warn(`[api/skills/install] Cache error: ${cacheErr.message}, falling back to ClawHub`);
+      }
+    }
+    
+    // Fall back to ClawHub if not in cache or copy failed
     const CLAWHUB_CLI = process.env.CLAWHUB_CLI?.trim() || "clawhub";
     const args = ["install", String(slug), "--workdir", WORKSPACE_DIR, "--no-input"];
     
@@ -2217,6 +2441,7 @@ app.post("/api/skills/install", requireApiKey, async (req, res) => {
           version: version || 'latest',
           output: result.output,
           exitCode: result.code,
+          source: 'clawhub',
           attempts: attempt + 1
         });
       }
@@ -2350,6 +2575,107 @@ app.post("/api/admin/restart", requireApiKey, async (req, res) => {
       } catch (err) {
         console.error("[api/admin/restart] Error restarting Gateway:", err);
       }
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message 
+    });
+  }
+});
+
+// ===== CRYPTO WALLET API ROUTES =====
+
+// GET /api/wallet - Get wallet info (public address, chains supported)
+app.get("/api/wallet", requireApiKey, async (_req, res) => {
+  try {
+    if (!agentWallet) {
+      return res.status(503).json({
+        ok: false,
+        error: 'Wallet not initialized yet. Wait for agent startup to complete.',
+        initialized: false
+      });
+    }
+    
+    const info = agentWallet.getInfo();
+    res.json({
+      ok: true,
+      ...info,
+      funded: false, // Placeholder - would need to check balance on-chain
+      note: "Fund this address with ETH/MATIC/etc to enable crypto trading and on-chain operations"
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message 
+    });
+  }
+});
+
+// POST /api/wallet/sign - Sign a message with agent's wallet
+app.post("/api/wallet/sign", requireApiKey, async (req, res) => {
+  try {
+    const { message } = req.body || {};
+    
+    if (!message) {
+      return res.status(400).json({ 
+        ok: false, 
+        error: 'Missing required field: message' 
+      });
+    }
+    
+    if (!agentWallet) {
+      return res.status(503).json({
+        ok: false,
+        error: 'Wallet not initialized'
+      });
+    }
+    
+    const signature = await agentWallet.signMessage(message);
+    
+    res.json({
+      ok: true,
+      message,
+      signature,
+      address: agentWallet.wallet.address
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      ok: false, 
+      error: error.message 
+    });
+  }
+});
+
+// GET /api/wallet/export - Export private key (use with caution!)
+app.get("/api/wallet/export", requireApiKey, async (req, res) => {
+  try {
+    // Additional security: require explicit confirmation param
+    const { confirm } = req.query;
+    
+    if (confirm !== 'yes') {
+      return res.status(400).json({
+        ok: false,
+        error: 'This endpoint exports your private key. Add ?confirm=yes to proceed.',
+        warning: '⚠️  Never share your private key. Anyone with it can control your funds.'
+      });
+    }
+    
+    if (!agentWallet) {
+      return res.status(503).json({
+        ok: false,
+        error: 'Wallet not initialized'
+      });
+    }
+    
+    const privateKey = agentWallet.getPrivateKey();
+    
+    res.json({
+      ok: true,
+      address: agentWallet.wallet.address,
+      privateKey,
+      warning: '⚠️  KEEP THIS PRIVATE! Save to Railway env var: AGENT_WALLET_PRIVATE_KEY',
+      instructions: 'Add this to Railway Variables to persist wallet across deployments'
     });
   } catch (error) {
     res.status(500).json({ 
@@ -2687,11 +3013,64 @@ app.use(async (req, res) => {
   return proxy.web(req, res, { target: GATEWAY_TARGET });
 });
 
+// Global wallet instance
+let agentWallet = null;
+
 const server = app.listen(PORT, () => {
   console.log(`[wrapper] listening on port ${PORT}`);
   console.log(`[wrapper] setup wizard: http://localhost:${PORT}/setup`);
   console.log(`[wrapper] configured: ${isConfigured()}`);
   console.log(`[wrapper] gateway token: ${OPENCLAW_GATEWAY_TOKEN.slice(0, 12)}...`);
+
+  // Copy cached skills from Docker image to workspace
+  (async () => {
+    try {
+      console.log("[wrapper] copying cached skills to workspace...");
+      const result = await copyCachedSkillsToWorkspace();
+      if (result.copied > 0) {
+        console.log(`[wrapper] installed ${result.copied} skills from cache`);
+      }
+      if (result.skipped > 0) {
+        console.log(`[wrapper] skipped ${result.skipped} skills (already exist)`);
+      }
+      if (result.errors > 0) {
+        console.warn(`[wrapper] failed to copy ${result.errors} skills`);
+      }
+    } catch (err) {
+      console.error(`[wrapper] skill cache setup failed: ${err.message}`);
+    }
+  })();
+
+  // Initialize wallet immediately (doesn't depend on gateway being configured)
+  (async () => {
+    try {
+      console.log("[wrapper] initializing agent wallet...");
+      agentWallet = await initializeWallet(STATE_DIR);
+      const walletInfo = agentWallet.getInfo();
+      console.log(`[wrapper] wallet ready: ${walletInfo.address}`);
+      
+      // Expose wallet address to gateway via environment variable
+      // This allows the agent to know and respond with its own wallet address
+      process.env.AGENT_WALLET_ADDRESS = walletInfo.address;
+      
+      // Also write to a file that skills can read
+      try {
+        const walletInfoPath = path.join(STATE_DIR, "wallet-info.json");
+        fs.writeFileSync(walletInfoPath, JSON.stringify({
+          address: walletInfo.address,
+          type: walletInfo.type,
+          chains: walletInfo.chains,
+          note: "This is the agent's crypto wallet. Fund it to enable on-chain operations.",
+          initialized: new Date().toISOString()
+        }, null, 2));
+        console.log(`[wrapper] wallet info written to ${walletInfoPath}`);
+      } catch (err) {
+        console.warn(`[wrapper] failed to write wallet info file: ${err.message}`);
+      }
+    } catch (err) {
+      console.error(`[wrapper] wallet initialization failed: ${err.message}`);
+    }
+  })();
 
   if (isConfigured()) {
     (async () => {
@@ -2703,6 +3082,7 @@ const server = app.listen(PORT, () => {
       } catch (err) {
         console.warn(`[wrapper] doctor --fix failed: ${err.message}`);
       }
+      
       await ensureGatewayRunning();
     })().catch((err) => {
       console.error(`[wrapper] failed to start gateway at boot: ${err.message}`);
