@@ -30,10 +30,10 @@ RUN curl -fsSL https://openclaw.ai/install.sh | bash || echo "Install script exi
 RUN npm install -g clawhub
 
 # Verify ClawHub works
-RUN clawhub --version
+RUN clawhub --cli-version
 
 # Cache bust for skill installation - change this value to force rebuild
-ARG SKILL_CACHE_VERSION=v6
+ARG SKILL_CACHE_VERSION=v7
 RUN echo "Skill cache version: $SKILL_CACHE_VERSION"
 
 # Pre-install common skills to a cache directory during build
