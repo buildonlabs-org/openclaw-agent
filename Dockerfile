@@ -26,21 +26,32 @@ ENV OPENCLAW_SKIP_SETUP=1 \
 # The install itself succeeds, just the post-install setup fails in Docker
 RUN curl -fsSL https://openclaw.ai/install.sh | bash || echo "Install script exit code: $? (expected if tty setup fails)"
 
-# Check if OpenClaw includes clawhub or if skills command is available
-RUN echo "Checking for skill management commands..." && \
-    openclaw --help | grep -i skill || echo "No skill command found in openclaw" && \
-    openclaw --help || true
+# Install ClawHub CLI for skill management
+RUN npm install -g clawhub
 
-# Try installing clawhub as npm package (may not exist)
-RUN npm install -g clawhub 2>&1 || echo "ClawHub npm package not available"
+# Verify ClawHub works
+RUN clawhub --version
 
 # Cache bust for skill installation - change this value to force rebuild
-ARG SKILL_CACHE_VERSION=v5
+ARG SKILL_CACHE_VERSION=v6
 RUN echo "Skill cache version: $SKILL_CACHE_VERSION"
 
-# Skip skill pre-caching for now - clawhub CLI not available
-RUN echo "Skill pre-caching skipped - ClawHub CLI not available" && \
-    echo "Skills will be installed at runtime via ClawHub API instead"
+# Pre-install common skills to a cache directory during build
+# This avoids runtime rate limits by bundling skills in the Docker image
+RUN mkdir -p /opt/skills-cache && \
+    echo "Installing skills to cache..." && \
+    clawhub install duckduckgo-search --workdir /opt/skills-cache --no-input && \
+    clawhub install weather --workdir /opt/skills-cache --no-input && \
+    clawhub install polymarket-odds --workdir /opt/skills-cache --no-input && \
+    clawhub install hyperliquid-cli --workdir /opt/skills-cache --no-input && \
+    clawhub install onchain --workdir /opt/skills-cache --no-input && \
+    clawhub install postiz --workdir /opt/skills-cache --no-input && \
+    clawhub install find-skills --workdir /opt/skills-cache --no-input && \
+    clawhub install self-improving-agent --workdir /opt/skills-cache --no-input && \
+    clawhub install github --workdir /opt/skills-cache --no-input && \
+    echo "Skill cache created" && \
+    ls -la /opt/skills-cache && \
+    du -sh /opt/skills-cache
 
 # Add OpenClaw to PATH
 ENV PATH="/root/.local/bin:/root/.openclaw/bin:${PATH}"
