@@ -7,18 +7,21 @@ function sleep(ms) {
 }
 
 export class OpenClawGatewayClient {
-  constructor({ gatewayUrl, token }) {
+  constructor({ gatewayUrl, token, enableDevicePairing = false }) {
     this.gatewayUrl = gatewayUrl;
     this.token = token;
+    this.enableDevicePairing = enableDevicePairing;
 
-    // Stable device keypair for this process (you can persist later)
-    const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
-    this.privateKey = privateKey;
+    // Only generate device keypair if device pairing is enabled
+    if (this.enableDevicePairing) {
+      const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
+      this.privateKey = privateKey;
 
-    const spkiDer = publicKey.export({ type: "spki", format: "der" });
-    this.rawPublicKey = spkiDer.subarray(spkiDer.length - 32);
-    this.rawPublicKeyB64 = this.rawPublicKey.toString("base64");
-    this.deviceId = crypto.createHash("sha256").update(this.rawPublicKey).digest("hex");
+      const spkiDer = publicKey.export({ type: "spki", format: "der" });
+      this.rawPublicKey = spkiDer.subarray(spkiDer.length - 32);
+      this.rawPublicKeyB64 = this.rawPublicKey.toString("base64");
+      this.deviceId = crypto.createHash("sha256").update(this.rawPublicKey).digest("hex");
+    }
 
     this.ws = null;
     this.ready = false;
@@ -90,41 +93,47 @@ export class OpenClawGatewayClient {
       const role = "operator";
       const scopes = ["operator.read", "operator.write", "operator.admin"];
 
-      const payload = this.buildDeviceAuthPayloadV2({
-        nonce,
-        signedAtMs: signedAt,
-        clientId,
-        clientMode,
+      const connectParams = {
+        minProtocol: 3,
+        maxProtocol: 3,
+        client: { id: clientId, version: "0.0.0", platform: "linux", mode: clientMode },
         role,
         scopes,
-      });
+        caps: [],
+        commands: [],
+        permissions: {},
+        auth: { token: this.token },
+        locale: "en-US",
+        userAgent: "backend-gateway-client",
+      };
 
-      const signature = crypto.sign(null, Buffer.from(payload, "utf8"), this.privateKey);
+      // Only include device info if device pairing is enabled
+      if (this.enableDevicePairing) {
+        const payload = this.buildDeviceAuthPayloadV2({
+          nonce,
+          signedAtMs: signedAt,
+          clientId,
+          clientMode,
+          role,
+          scopes,
+        });
+
+        const signature = crypto.sign(null, Buffer.from(payload, "utf8"), this.privateKey);
+
+        connectParams.device = {
+          id: this.deviceId,
+          publicKey: this.rawPublicKeyB64,
+          signature: signature.toString("base64"),
+          signedAt,
+          nonce,
+        };
+      }
 
       this._send({
         type: "req",
         id: "c1",
         method: "connect",
-        params: {
-          minProtocol: 3,
-          maxProtocol: 3,
-          client: { id: clientId, version: "0.0.0", platform: "linux", mode: clientMode },
-          role,
-          scopes,
-          caps: [],
-          commands: [],
-          permissions: {},
-          auth: { token: this.token },
-          locale: "en-US",
-          userAgent: "backend-gateway-client",
-          device: {
-            id: this.deviceId,
-            publicKey: this.rawPublicKeyB64,
-            signature: signature.toString("base64"),
-            signedAt,
-            nonce,
-          },
-        },
+        params: connectParams,
       });
 
       return;

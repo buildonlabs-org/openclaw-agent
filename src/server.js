@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import cors from "cors";
 import express from "express";
 import httpProxy from "http-proxy";
 import { WebSocketServer } from "ws";
@@ -203,6 +204,34 @@ async function startGateway() {
     console.log(`[gateway] allowInsecureAuth config warning: ${err.message}`);
   }
 
+  // Disable device pairing requirement globally
+  try {
+    console.log("[gateway] disabling device pairing...");
+    await runCmd(OPENCLAW_CLI, [
+      "config",
+      "set",
+      "gateway.devices.requirePairing",
+      "false",
+    ]);
+    console.log("[gateway] device pairing disabled");
+  } catch (err) {
+    console.log(`[gateway] device pairing config warning: ${err.message}`);
+  }
+
+  // Note: We handle auto-approval in the wrapper's checkAndApproveDevices loop
+  // Don't enable gateway's built-in autoApprove to avoid race conditions
+  try {
+    await runCmd(OPENCLAW_CLI, [
+      "config",
+      "set",
+      "gateway.devices.autoApprove",
+      "false",
+    ]);
+    console.log("[gateway] gateway built-in auto-approve disabled (wrapper handles it)");
+  } catch (err) {
+    console.log(`[gateway] device auto-approve config warning: ${err.message}`);
+  }
+
   // Configure allowed origins for Railway/external access
   try {
     console.log("[gateway] configuring CORS origins...");
@@ -258,6 +287,8 @@ async function startGateway() {
       ...process.env,
       OPENCLAW_STATE_DIR: STATE_DIR,
       OPENCLAW_WORKSPACE_DIR: WORKSPACE_DIR,
+      OPENCLAW_SKIP_DEVICE_PAIRING: "true",  // Skip device pairing requirement
+      OPENCLAW_AUTO_APPROVE_DEVICES: "true",  // Auto-approve device requests
     },
   });
 
@@ -304,6 +335,146 @@ async function ensureGatewayRunning() {
       if (isReady) {
         // Reset restart attempts counter on successful start
         restartAttempts = 0;
+        
+        // Auto-approve any pending device pairing requests continuously
+        const checkAndApproveDevices = async () => {
+          try {
+            console.log(`[gateway] Checking for pending devices...`);
+            const result = await runCmd(OPENCLAW_CLI, ["devices", "list"]);
+            const output = result.output || "";
+            
+            console.log(`[gateway] Devices list output (${output.length} chars): ${output.substring(0, 200)}`);
+            
+            if (!output.trim()) {
+              console.log(`[gateway] No devices output yet`);
+              return;
+            }
+            
+            // Parse output for pending devices - ONLY from Pending section
+            const lines = output.split('\n');
+            const pendingRequestIds = [];
+            let inPendingSection = false;
+            
+            for (const line of lines) {
+              if (!line.trim()) continue;
+              
+              // Detect Pending section start
+              if (line.includes('Pending (')) {
+                inPendingSection = true;
+                continue;
+              }
+              
+              // Detect section end (next table header or "Paired" section)
+              if (inPendingSection && (line.includes('Paired (') || line.match(/^[└┴]/))) {
+                inPendingSection = false;
+                break;
+              }
+              
+              // Only extract UUIDs from Pending section
+              if (inPendingSection) {
+                const uuidMatch = line.match(/│\s*([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\s*│/i);
+                if (uuidMatch) {
+                  const requestId = uuidMatch[1];
+                  console.log(`[gateway] Found pending request: ${requestId}`);
+                  pendingRequestIds.push(requestId);
+                }
+              }
+            }
+            
+            console.log(`[gateway] Found ${pendingRequestIds.length} pending request(s)`);
+            
+            // Auto-approve each pending device request with operator role and scopes
+            for (const requestId of pendingRequestIds) {
+              console.log(`[gateway] 🔓 Auto-approving request: ${requestId}`);
+              try {
+                // Try with role and scopes first
+                let approveResult = await runCmd(OPENCLAW_CLI, [
+                  "devices", "approve", requestId,
+                  "--role", "operator",
+                  "--scopes", "operator.read,operator.write,operator.admin"
+                ]);
+                
+                // If flags not supported, try simple approve
+                if (approveResult.code !== 0 && approveResult.output?.includes('unknown option')) {
+                  console.log(`[gateway] Role/scope flags not supported, trying simple approve...`);
+                  approveResult = await runCmd(OPENCLAW_CLI, ["devices", "approve", requestId]);
+                }
+                
+                console.log(`[gateway] Approve result code: ${approveResult.code}`);
+                if (approveResult.code === 0) {
+                  console.log(`[gateway] ✅ Request ${requestId} approved with operator role`);
+                } else {
+                  // Only log warnings for real errors, not "unknown requestId" (already processed)
+                  const isAlreadyProcessed = approveResult.output?.includes('unknown requestId');
+                  if (isAlreadyProcessed) {
+                    console.log(`[gateway] ℹ️  Request ${requestId} was already processed`);
+                  } else {
+                    console.warn(`[gateway] ⚠️  Approval returned code ${approveResult.code}: ${approveResult.output}`);
+                  }
+                }
+              } catch (approveErr) {
+                console.error(`[gateway] ❌ Failed to approve request ${requestId}: ${approveErr.message}`);
+              }
+            }
+          } catch (err) {
+            console.error(`[gateway] Error in checkAndApproveDevices: ${err.message}`);
+          }
+        };
+        
+        // Check for devices missing correct scopes and revoke them
+        const revokeIncorrectDevices = async () => {
+          try {
+            console.log(`[gateway] Checking for devices with incorrect scopes...`);
+            const result = await runCmd(OPENCLAW_CLI, ["devices", "list"]);
+            const output = result.output || "";
+            
+            if (!output.includes('Paired')) {
+              console.log(`[gateway] No paired devices found`);
+              return;
+            }
+            
+            // Parse table looking for devices in "Paired" section
+            const lines = output.split('\n');
+            let inPairedSection = false;
+            
+            for (const line of lines) {
+              if (line.includes('Paired (')) {
+                inPairedSection = true;
+                continue;
+              }
+              if (inPairedSection && line.includes('├─') || line.includes('└─')) {
+                break;  // End of paired section
+              }
+              
+              if (inPairedSection && line.includes('│')) {
+                // Extract device ID (first column after │)
+                const deviceMatch = line.match(/│\s*([a-f0-9]{20,})\s*│/i);
+                if (!deviceMatch) continue;
+                
+                const deviceId = deviceMatch[1];
+                // Check if line contains operator.write scope
+                if (!line.includes('operator.write')) {
+                  console.log(`[gateway] 🗑️  Revoking device ${deviceId} (missing operator.write scope)`);
+                  try {
+                    await runCmd(OPENCLAW_CLI, ["devices", "revoke", deviceId]);
+                    console.log(`[gateway] ✅ Device ${deviceId} revoked, will re-pair with correct scopes`);
+                  } catch (revokeErr) {
+                    console.error(`[gateway] ❌ Failed to revoke ${deviceId}: ${revokeErr.message}`);
+                  }
+                }
+              }
+            }
+          } catch (err) {
+            console.error(`[gateway] Error checking device scopes: ${err.message}`);
+          }
+        };
+        
+        // Revoke devices with incorrect scopes, then start auto-approval loop
+        setTimeout(async () => {
+          await revokeIncorrectDevices();
+          checkAndApproveDevices();  // Check immediately after revoke
+          setInterval(checkAndApproveDevices, 5000);  // Then every 5 seconds
+        }, 1000);
       }
     } finally {
       gatewayStarting = null;
@@ -445,6 +616,36 @@ function requireApiKey(req, res, next) {
 // Express app
 const app = express();
 app.disable("x-powered-by");
+
+// CORS configuration
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl)
+    if (!origin) return callback(null, true);
+    
+    // Allow all Railway domains
+    if (origin.includes('.railway.app')) return callback(null, true);
+    
+    // Allow localhost for development
+    if (origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) {
+      return callback(null, true);
+    }
+    
+    // Allow configured domains
+    if (process.env.RAILWAY_PUBLIC_DOMAIN && origin.includes(process.env.RAILWAY_PUBLIC_DOMAIN)) {
+      return callback(null, true);
+    }
+    
+    // Allow any other origin (you can restrict this further if needed)
+    return callback(null, true);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  exposedHeaders: ['Content-Range', 'X-Content-Range']
+};
+
+app.use(cors(corsOptions));
 app.use(express.json({ limit: "1mb" }));
 
 // Health endpoints
@@ -1653,10 +1854,11 @@ app.get("/api/devices", requireApiKey, async (_req, res) => {
     
     for (const line of lines) {
       if (!line.trim()) continue;
-      const pendingMatch = line.match(/pending.*?([a-f0-9]{12,})/i);
-      if (pendingMatch) {
+      // Extract UUID request IDs from table rows: │ <uuid> │
+      const uuidMatch = line.match(/│\s*([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\s*│/i);
+      if (uuidMatch) {
         devices.push({
-          requestId: pendingMatch[1],
+          requestId: uuidMatch[1],
           status: 'pending',
           info: line.trim(),
         });
@@ -1671,12 +1873,22 @@ app.get("/api/devices", requireApiKey, async (_req, res) => {
 
 app.post("/api/devices/approve", requireApiKey, async (req, res) => {
   try {
-    const { requestId } = req.body;
+    const { requestId, role, scopes } = req.body;
     if (!requestId) {
       return res.status(400).json({ success: false, error: "Missing requestId" });
     }
     
-    const result = await runCmd(OPENCLAW_CLI, ["devices", "approve", requestId]);
+    // Build approve command with optional role and scopes
+    const approveArgs = ["devices", "approve", requestId];
+    if (role) {
+      approveArgs.push("--role", role);
+    }
+    if (scopes) {
+      const scopesStr = Array.isArray(scopes) ? scopes.join(',') : scopes;
+      approveArgs.push("--scopes", scopesStr);
+    }
+    
+    const result = await runCmd(OPENCLAW_CLI, approveArgs);
     res.json({ 
       success: result.code === 0, 
       message: `Device ${requestId} approved`,
@@ -1690,27 +1902,15 @@ app.post("/api/devices/approve", requireApiKey, async (req, res) => {
 // GET /api/devices/status - Check device pairing status for this instance
 app.get("/api/devices/status", requireApiKey, async (_req, res) => {
   try {
-    const client = getGatewayClient();
-    const deviceIdPath = path.join(STATE_DIR, "device.id");
-    
     res.json({
       ok: true,
-      deviceId: client.deviceId,
-      deviceIdPersisted: fs.existsSync(deviceIdPath),
-      pairingRequired: client.pairingRequired || false,
+      devicePairingEnabled: false,
+      pairingRequired: false,
       stateDir: STATE_DIR,
+      message: "Device pairing is disabled for API-based usage. Skills can be used without device approval.",
       help: {
-        message: client.pairingRequired 
-          ? "Device pairing is required. Use 'openclaw devices list' to find the request ID, then 'openclaw devices approve <requestId>' to approve."
-          : "Device pairing status OK",
-        commands: [
-          "openclaw devices list",
-          "openclaw devices approve <requestId>"
-        ],
-        apiEndpoints: {
-          listDevices: "GET /api/devices",
-          approveDevice: "POST /api/devices/approve {requestId: \"...\"}"
-        }
+        message: "Device pairing is disabled. All operations work without device approval.",
+        note: "Device pairing is only needed for Telegram/Discord channel access, not for API usage."
       }
     });
   } catch (error) {
@@ -2449,6 +2649,15 @@ proxy.on("proxyReqWs", (proxyReq, req, socket, options, head) => {
 
 // Main request handler
 app.use(async (req, res) => {
+  // API routes should be handled by their specific handlers above
+  // If we reach here with /api/* path, it means no handler matched
+  if (req.path.startsWith("/api/")) {
+    return res.status(404).json({ 
+      ok: false, 
+      error: "Endpoint not found" 
+    });
+  }
+  
   if (!isConfigured() && !req.path.startsWith("/setup")) {
     return res.redirect("/setup");
   }
