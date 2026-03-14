@@ -1572,6 +1572,87 @@ app.get("/api/cron/webhook-url", requireApiKey, async (req, res) => {
   }
 });
 
+// POST /api/cron/audit-webhooks - Audit and fix all cron jobs to ensure they have webhook delivery
+app.post("/api/cron/audit-webhooks", requireApiKey, async (req, res) => {
+  try {
+    console.log('[audit-webhooks] Starting cron webhook audit...');
+    
+    // List all cron jobs
+    const result = await runCmd(OPENCLAW_CLI, ["cron", "list", "--json"]);
+    if (result.code !== 0) {
+      return res.status(500).json({
+        ok: false,
+        error: 'Failed to list cron jobs',
+        details: result.error
+      });
+    }
+    
+    const webhookUrl = getAgentWebhookUrl(req);
+    const jobs = JSON.parse(result.output);
+    
+    const summary = {
+      total: jobs.length,
+      alreadyConfigured: 0,
+      fixed: 0,
+      failed: 0,
+      details: []
+    };
+    
+    for (const job of jobs) {
+      const hasWebhook = job.delivery?.mode === 'webhook';
+      const correctUrl = job.delivery?.to === webhookUrl;
+      
+      if (hasWebhook && correctUrl) {
+        summary.alreadyConfigured++;
+        summary.details.push({
+          id: job.id,
+          name: job.name,
+          status: 'ok',
+          message: 'Already configured with webhook'
+        });
+      } else {
+        console.log(`[audit-webhooks] Fixing: ${job.name} (${job.id})`);
+        
+        const updateResult = await runCmd(OPENCLAW_CLI, [
+          "cron", "update", job.id,
+          "--webhook",
+          "--webhook-url", webhookUrl
+        ]);
+        
+        if (updateResult.code === 0) {
+          console.log(`[audit-webhooks] ✅ Fixed: ${job.name}`);
+          summary.fixed++;
+          summary.details.push({
+            id: job.id,
+            name: job.name,
+            status: 'fixed',
+            message: 'Added webhook delivery'
+          });
+        } else {
+          console.error(`[audit-webhooks] ❌ Failed: ${job.name}`, updateResult.error);
+          summary.failed++;
+          summary.details.push({
+            id: job.id,
+            name: job.name,
+            status: 'failed',
+            message: updateResult.error || 'Update failed'
+          });
+        }
+      }
+    }
+    
+    console.log(`[audit-webhooks] Complete: ${summary.fixed} fixed, ${summary.failed} failed, ${summary.alreadyConfigured} already ok`);
+    
+    res.json({
+      ok: true,
+      summary,
+      webhookUrl
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
 // POST /api/notifications/test - Send a test cron notification
 app.post("/api/notifications/test", requireApiKey, async (req, res) => {
   try {
@@ -2949,6 +3030,25 @@ app.post("/api/chat", requireApiKey, async (req, res) => {
       }
     }
     
+    // Auto-inject webhook URL for cron job requests
+    let finalMessage = message;
+    const isCronRequest = detectCronRequest(message);
+    
+    if (isCronRequest) {
+      const webhookUrl = getAgentWebhookUrl(req);
+      console.log('[api/chat] Detected cron request, injecting webhook URL:', webhookUrl);
+      
+      // Append webhook instructions if not already mentioned
+      if (!message.toLowerCase().includes('webhook')) {
+        finalMessage = `${message}
+
+IMPORTANT: Configure this cron job with webhook delivery to ${webhookUrl} so completion notifications are sent to the launcher UI.`;
+        console.log('[api/chat] Injected webhook instructions');
+      } else {
+        console.log('[api/chat] Webhook already mentioned in message, skipping injection');
+      }
+    }
+    
     // Set request timeout
     req.setTimeout(120000); // 2 minutes
     res.setTimeout(120000);
@@ -2962,15 +3062,21 @@ app.post("/api/chat", requireApiKey, async (req, res) => {
       const response = await client.sendChat({
         agentId,
         sessionKey: finalSessionKey,
-        text: message
+        text: finalMessage
       });
+      
+      // VERIFICATION STEP: Check if any cron jobs were created/modified without webhooks
+      // This catches cases where pattern detection missed or agent created cron differently
+      const cronJobsFixed = await verifyCronWebhooksAfterChat(req);
       
       res.json({
         ok: true,
         agentId,
         sessionKey: finalSessionKey,
         response,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        cronDetected: isCronRequest,
+        cronJobsFixed // Number of cron jobs that were automatically fixed
       });
     } catch (chatError) {
       // If connection failed, reset client and try once more
@@ -2991,6 +3097,177 @@ app.post("/api/chat", requireApiKey, async (req, res) => {
     });
   }
 });
+
+/**
+ * Verify all cron jobs have webhook delivery configured
+ * Automatically fixes any that are missing it
+ */
+async function verifyCronWebhooksAfterChat(req) {
+  try {
+    // List all cron jobs
+    const result = await runCmd(OPENCLAW_CLI, ["cron", "list", "--json"]);
+    if (result.code !== 0) {
+      console.warn('[verify-webhooks] Failed to list cron jobs:', result.error);
+      return 0;
+    }
+    
+    const webhookUrl = getAgentWebhookUrl(req);
+    const jobs = JSON.parse(result.output);
+    let fixedCount = 0;
+    
+    for (const job of jobs) {
+      // Check if job has webhook delivery configured
+      const hasWebhook = job.delivery?.mode === 'webhook';
+      const correctUrl = job.delivery?.to === webhookUrl;
+      
+      if (!hasWebhook || !correctUrl) {
+        console.log(`[verify-webhooks] Fixing cron job: ${job.name} (${job.id})`);
+        
+        // Update the job to add webhook delivery
+        const updateResult = await runCmd(OPENCLAW_CLI, [
+          "cron", "update", job.id,
+          "--webhook",
+          "--webhook-url", webhookUrl
+        ]);
+        
+        if (updateResult.code === 0) {
+          console.log(`[verify-webhooks] ✅ Fixed: ${job.name}`);
+          fixedCount++;
+        } else {
+          console.error(`[verify-webhooks] ❌ Failed to fix: ${job.name}`, updateResult.error);
+        }
+      }
+    }
+    
+    if (fixedCount > 0) {
+      console.log(`[verify-webhooks] Fixed ${fixedCount} cron job(s) with missing webhooks`);
+    }
+    
+    return fixedCount;
+  } catch (error) {
+    console.error('[verify-webhooks] Error during verification:', error);
+    return 0;
+  }
+}
+
+/**
+ * Detect if a message is requesting to create/configure a cron job
+ */
+function detectCronRequest(message) {
+  const lowerMessage = message.toLowerCase();
+  
+  // Patterns that indicate cron job creation/configuration
+  const cronPatterns = [
+    /\bcron\s+job\b/,
+    /\bcron\s+add\b/,
+    /\bcreate.*cron/,
+    /\bschedule.*task/,
+    /\bschedule.*job/,
+    /\brecurring.*task/,
+    /\bautomated.*task/,
+    /\bset.*reminder/,
+    /\bruns?\s+every\b/,
+    /\bevery\s+\d+\s+(minute|hour|day|week)/,
+    /\bdaily\s+(at|trigger|run)/,
+    /\bhourly\s+(trigger|run)/,
+    /\bweekly\s+(trigger|run)/,
+    /at\s+\d+\s*(am|pm)/,
+  ];
+  
+  return cronPatterns.some(pattern => pattern.test(lowerMessage));
+}
+
+/**
+ * Get the agent's webhook URL for cron delivery
+ */
+function getAgentWebhookUrl(req) {
+  // Determine the agent's public URL
+  const publicDomain = process.env.RAILWAY_PUBLIC_DOMAIN || 
+                      process.env.RAILWAY_STATIC_URL ||
+                      (req ? req.get('host') : null);
+  
+  const protocol = publicDomain?.includes('localhost') ? 'http' : 'https';
+  return `${protocol}://${publicDomain}/api/openclaw-cron-webhook`;
+}
+
+/**
+ * Start periodic audit to ensure all cron jobs have webhook delivery
+ * Runs every 5 minutes
+ */
+let periodicAuditInterval = null;
+function startPeriodicCronWebhookAudit() {
+  // Don't start if already running
+  if (periodicAuditInterval) {
+    console.log('[periodic-audit] Already running');
+    return;
+  }
+  
+  const AUDIT_INTERVAL = 5 * 60 * 1000; // 5 minutes
+  
+  console.log('[periodic-audit] Starting cron webhook audit (every 5 minutes)');
+  
+  // Run immediately on start
+  performCronWebhookAudit();
+  
+  // Then run periodically
+  periodicAuditInterval = setInterval(() => {
+    performCronWebhookAudit();
+  }, AUDIT_INTERVAL);
+}
+
+/**
+ * Perform the actual audit - check and fix cron jobs
+ */
+async function performCronWebhookAudit() {
+  try {
+    // Only run if configured
+    if (!isConfigured()) {
+      return;
+    }
+    
+    console.log('[periodic-audit] Checking cron jobs for webhook delivery...');
+    
+    const result = await runCmd(OPENCLAW_CLI, ["cron", "list", "--json"]);
+    if (result.code !== 0) {
+      console.warn('[periodic-audit] Failed to list cron jobs');
+      return;
+    }
+    
+    const webhookUrl = getAgentWebhookUrl(null);
+    const jobs = JSON.parse(result.output);
+    let fixedCount = 0;
+    
+    for (const job of jobs) {
+      const hasWebhook = job.delivery?.mode === 'webhook';
+      const correctUrl = job.delivery?.to === webhookUrl;
+      
+      if (!hasWebhook || !correctUrl) {
+        console.log(`[periodic-audit] Fixing cron job: ${job.name} (${job.id})`);
+        
+        const updateResult = await runCmd(OPENCLAW_CLI, [
+          "cron", "update", job.id,
+          "--webhook",
+          "--webhook-url", webhookUrl
+        ]);
+        
+        if (updateResult.code === 0) {
+          console.log(`[periodic-audit] ✅ Fixed: ${job.name}`);
+          fixedCount++;
+        } else {
+          console.error(`[periodic-audit] ❌ Failed to fix: ${job.name}`);
+        }
+      }
+    }
+    
+    if (fixedCount > 0) {
+      console.log(`[periodic-audit] Fixed ${fixedCount} cron job(s) with missing webhooks`);
+    } else if (jobs.length > 0) {
+      console.log(`[periodic-audit] All ${jobs.length} cron job(s) have webhook delivery ✓`);
+    }
+  } catch (error) {
+    console.error('[periodic-audit] Error during audit:', error.message);
+  }
+}
 
 // ===== OpenClaw CLI INFO ENDPOINTS =====
 
@@ -3308,6 +3585,9 @@ const server = app.listen(PORT, () => {
       }
       
       await ensureGatewayRunning();
+      
+      // Start periodic cron webhook audit (runs every 5 minutes)
+      startPeriodicCronWebhookAudit();
     })().catch((err) => {
       console.error(`[wrapper] failed to start gateway at boot: ${err.message}`);
     });
