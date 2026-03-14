@@ -36,19 +36,35 @@ RUN clawhub --cli-version
 ARG SKILL_CACHE_VERSION=v8
 RUN echo "Skill cache version: $SKILL_CACHE_VERSION"
 
-# Pre-install common skills to a cache directory during build
-# This avoids runtime rate limits by bundling skills in the Docker image
+# Accept ADDITIONAL_SKILLS from Railway environment variable
+# Frontend sets this via Railway API before triggering redeploy
+# Format: space-separated skill names (e.g., "twitter telegram weather")
+ARG ADDITIONAL_SKILLS=""
+
+# Pre-install all skills to /opt/skills-cache during build
+# Common skills + ADDITIONAL_SKILLS from Railway env var
 # Add 2-second delays between installs to respect ClawHub rate limits
-# Use || true to continue even if some skills fail (e.g., rate limits)
 RUN mkdir -p /opt/skills-cache && \
-    echo "Installing skills to cache (with rate limit delays)..." && \
+    echo "=== Skill Installation to /opt/skills-cache ===" && \
+    echo "Common skills: duckduckgo-search polymarket-odds hyperliquid-cli onchain" && \
+    echo "Additional skills: ${ADDITIONAL_SKILLS:-none}" && \
+    echo "" && \
     clawhub install duckduckgo-search --workdir /opt/skills-cache --no-input || echo "⚠ Failed: duckduckgo-search" && sleep 2 && \
-    clawhub install polymarket-odds --workdir /opt/skills-cache --no-input || echo "⚠ Failed: polymarket-odds" && sleep 2 && \
-    clawhub install hyperliquid-cli --workdir /opt/skills-cache --no-input || echo "⚠ Failed: hyperliquid-cli" && sleep 2 && \
-    clawhub install onchain --workdir /opt/skills-cache --no-input || echo "⚠ Failed: onchain" && sleep 2 && \
-    echo "Skill cache setup complete" && \
+    if [ -n "$ADDITIONAL_SKILLS" ]; then \
+        echo "Installing additional skills..." && \
+        for skill in $ADDITIONAL_SKILLS; do \
+            skill=$(echo "$skill" | xargs) && \
+            if [ -n "$skill" ]; then \
+                echo "  → Installing: $skill" && \
+                clawhub install "$skill" --workdir /opt/skills-cache --no-input || echo "  ⚠ Failed: $skill" && \
+                sleep 2; \
+            fi; \
+        done; \
+    fi && \
+    echo "" && \
+    echo "✓ Skill cache setup complete" && \
     echo "Installed skills:" && \
-    ls -la /opt/skills-cache/skills 2>/dev/null || echo "(no skills installed)" && \
+    ls -la /opt/skills-cache/skills 2>/dev/null || echo "(no skills directory)" && \
     du -sh /opt/skills-cache 2>/dev/null || true
 
 # Add OpenClaw to PATH
