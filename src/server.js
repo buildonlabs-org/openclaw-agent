@@ -745,8 +745,11 @@ app.post("/api/openclaw-cron-webhook", express.json({ limit: "1mb" }), async (re
   try {
     const payload = req.body;
     
+    console.log('[cron-webhook] Received payload:', JSON.stringify(payload, null, 2));
+    
     // Validate it's a cron finished event
     if (!payload || payload.type !== 'cron.finished') {
+      console.warn('[cron-webhook] Invalid payload type:', payload?.type);
       return res.status(400).json({ 
         ok: false, 
         error: 'Invalid payload', 
@@ -757,6 +760,7 @@ app.post("/api/openclaw-cron-webhook", express.json({ limit: "1mb" }), async (re
     const { job, run } = payload;
     
     if (!job || !run) {
+      console.warn('[cron-webhook] Missing job or run data');
       return res.status(400).json({
         ok: false,
         error: 'Invalid payload',
@@ -779,27 +783,33 @@ app.post("/api/openclaw-cron-webhook", express.json({ limit: "1mb" }), async (re
       message = `⏭️ ${summary}`;
     }
 
-    // Send to launcher webhook
-    await notifyCronJob(
-      jobName,
-      message,
-      {
-        jobId: job.id || job.jobId,
-        status: run.status,
-        startedAt: run.startedAt,
-        endedAt: run.endedAt,
-        duration: run.duration,
-        schedule: job.schedule?.kind,
-        sessionTarget: job.sessionTarget
-      }
-    );
+    const notificationData = {
+      jobId: job.id || job.jobId,
+      status: run.status,
+      startedAt: run.startedAt,
+      endedAt: run.endedAt,
+      duration: run.duration,
+      schedule: job.schedule?.kind,
+      sessionTarget: job.sessionTarget
+    };
 
-    console.log(`[cron-webhook] Forwarded cron job: ${jobName} [${status}]`);
+    console.log(`[cron-webhook] Forwarding notification: ${jobName} [${status}]`);
+    console.log(`[cron-webhook] Notification data:`, JSON.stringify(notificationData, null, 2));
+
+    // Send to launcher webhook
+    const notificationSent = await notifyCronJob(jobName, message, notificationData);
+
+    if (notificationSent) {
+      console.log(`[cron-webhook] ✅ Successfully forwarded cron job: ${jobName} [${status}]`);
+    } else {
+      console.error(`[cron-webhook] ❌ Failed to forward notification for: ${jobName}`);
+    }
     
-    res.json({ ok: true, received: true });
+    res.json({ ok: true, received: true, notificationSent });
     
   } catch (error) {
     console.error('[cron-webhook] Error processing cron event:', error);
+    console.error('[cron-webhook] Error stack:', error.stack);
     res.status(500).json({ 
       ok: false, 
       error: 'Failed to process cron event',

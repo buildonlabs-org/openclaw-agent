@@ -58,6 +58,16 @@ async function sendNotification(type, title, message, data = null) {
     const truncatedTitle = title.slice(0, 200);
     const truncatedMessage = message.slice(0, 1000);
 
+    const payload = {
+      type,
+      title: truncatedTitle,
+      message: truncatedMessage,
+      data,
+    };
+
+    console.log(`[notification] sending ${type}: ${truncatedTitle}`);
+    console.log(`[notification] webhook URL: ${LAUNCHER_WEBHOOK_URL.substring(0, 50)}...`);
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
@@ -67,12 +77,7 @@ async function sendNotification(type, title, message, data = null) {
         'Content-Type': 'application/json',
         'X-Agent-Token': LAUNCHER_AGENT_TOKEN,
       },
-      body: JSON.stringify({
-        type,
-        title: truncatedTitle,
-        message: truncatedMessage,
-        data,
-      }),
+      body: JSON.stringify(payload),
       signal: controller.signal,
     });
 
@@ -82,16 +87,20 @@ async function sendNotification(type, title, message, data = null) {
     if (!response.ok) {
       const errorText = await response.text().catch(() => 'Unknown error');
       console.error(`[notification] webhook failed: ${response.status} ${errorText}`);
+      console.error(`[notification] payload was:`, JSON.stringify(payload, null, 2));
       return false;
     }
 
+    const responseData = await response.text();
+    console.log(`[notification] webhook success: ${response.status} ${responseData.substring(0, 100)}`);
     return true;
   } catch (error) {
     // Don't crash on notification failures
     if (error.name === 'AbortError') {
-      console.warn('[notification] webhook timeout');
+      console.warn('[notification] webhook timeout after', TIMEOUT_MS, 'ms');
     } else {
       console.error('[notification] webhook error:', error.message);
+      console.error('[notification] error stack:', error.stack);
     }
     return false;
   }
