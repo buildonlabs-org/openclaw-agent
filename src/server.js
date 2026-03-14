@@ -746,55 +746,114 @@ app.post("/api/openclaw-cron-webhook", express.json({ limit: "1mb" }), async (re
     const payload = req.body;
     
     console.log('[cron-webhook] Received payload:', JSON.stringify(payload, null, 2));
+    console.log('[cron-webhook] Payload keys:', Object.keys(payload || {}));
+    console.log('[cron-webhook] Payload type:', typeof payload, 'Type field:', payload?.type);
     
-    // Validate it's a cron finished event
-    if (!payload || payload.type !== 'cron.finished') {
-      console.warn('[cron-webhook] Invalid payload type:', payload?.type);
+    if (!payload) {
+      console.warn('[cron-webhook] No payload received');
       return res.status(400).json({ 
         ok: false, 
-        error: 'Invalid payload', 
-        message: 'Expected cron.finished event' 
+        error: 'No payload',
+        message: 'Request body is empty' 
       });
     }
 
-    const { job, run } = payload;
+    // Handle different OpenClaw webhook payload formats
+    let job, run, eventType;
     
-    if (!job || !run) {
-      console.warn('[cron-webhook] Missing job or run data');
-      return res.status(400).json({
-        ok: false,
-        error: 'Invalid payload',
-        message: 'Missing job or run data'
-      });
+    // Format 1: Standard cron.finished event
+    if (payload.type === 'cron.finished') {
+      job = payload.job;
+      run = payload.run;
+      eventType = 'cron.finished';
     }
+    // Format 2: Direct job/run structure (OpenClaw may send this)
+    else if (payload.job && payload.run) {
+      job = payload.job;
+      run = payload.run;
+      eventType = 'cron-event';
+    }
+    // Format 3: Flat structure with job details at top level
+    else if (payload.jobId || payload.id) {
+      job = {
+        id: payload.jobId || payload.id,
+        name: payload.jobName || payload.name || 'Cron Job',
+        schedule: payload.schedule
+      };
+      run = {
+        status: payload.status || 'completed',
+        summary: payload.summary || payload.message || 'Job completed',
+        error: payload.error,
+        startedAt: payload.startedAt,
+        endedAt: payload.endedAt,
+        duration: payload.duration
+      };
+      eventType = 'flat-format';
+    }
+    // Format 4: OpenClaw gateway event format
+    else if (payload.kind === 'cron' || payload.event === 'cron') {
+      // Gateway sends "kind" or "event" field
+      job = {
+        id: payload.jobId || 'unknown',
+        name: payload.jobName || payload.name || 'Cron Job',
+        schedule: payload.schedule
+      };
+      run = {
+        status: payload.status || payload.state || 'completed',
+        summary: payload.text || payload.message || 'Job completed',
+        error: payload.error,
+        startedAt: payload.startedAt || payload.timestamp,
+        endedAt: payload.endedAt || new Date().toISOString(),
+        duration: payload.duration || 0
+      };
+      eventType = 'gateway-format';
+    }
+    else {
+      console.error('[cron-webhook] Unknown payload format. Payload:', JSON.stringify(payload, null, 2));
+      // Accept it anyway and try to extract what we can
+      job = {
+        id: 'unknown',
+        name: payload.name || payload.title || 'Cron Job',
+      };
+      run = {
+        status: 'completed',
+        summary: payload.message || payload.text || JSON.stringify(payload).substring(0, 100),
+      };
+      eventType = 'unknown-format';
+    }
+
+    console.log('[cron-webhook] Parsed format:', eventType);
+    console.log('[cron-webhook] Job:', JSON.stringify(job, null, 2));
+    console.log('[cron-webhook] Run:', JSON.stringify(run, null, 2));
 
     // Extract cron job details
-    const jobName = job.name || 'Unnamed Cron Job';
-    const status = run.status; // 'success', 'error', 'skipped'
-    const summary = run.summary || run.error || 'No summary available';
+    const jobName = job?.name || 'Unnamed Cron Job';
+    const status = run?.status || 'completed';
+    const summary = run?.summary || run?.error || 'Completed';
     
     // Build notification message
     let message = summary;
-    if (status === 'success') {
+    if (status === 'success' || status === 'completed' || status === 'ok') {
       message = `✅ ${summary}`;
-    } else if (status === 'error') {
+    } else if (status === 'error' || status === 'failed') {
       message = `❌ ${summary}`;
     } else if (status === 'skipped') {
       message = `⏭️ ${summary}`;
     }
 
     const notificationData = {
-      jobId: job.id || job.jobId,
-      status: run.status,
-      startedAt: run.startedAt,
-      endedAt: run.endedAt,
-      duration: run.duration,
-      schedule: job.schedule?.kind,
-      sessionTarget: job.sessionTarget
+      jobId: job?.id || job?.jobId,
+      status: run?.status,
+      startedAt: run?.startedAt,
+      endedAt: run?.endedAt,
+      duration: run?.duration,
+      schedule: job?.schedule?.kind,
+      sessionTarget: job?.sessionTarget,
+      eventType, // Include for debugging
+      rawPayload: payload // Include raw payload for debugging
     };
 
     console.log(`[cron-webhook] Forwarding notification: ${jobName} [${status}]`);
-    console.log(`[cron-webhook] Notification data:`, JSON.stringify(notificationData, null, 2));
 
     // Send to launcher webhook
     const notificationSent = await notifyCronJob(jobName, message, notificationData);
@@ -805,7 +864,7 @@ app.post("/api/openclaw-cron-webhook", express.json({ limit: "1mb" }), async (re
       console.error(`[cron-webhook] ❌ Failed to forward notification for: ${jobName}`);
     }
     
-    res.json({ ok: true, received: true, notificationSent });
+    res.json({ ok: true, received: true, notificationSent, eventType });
     
   } catch (error) {
     console.error('[cron-webhook] Error processing cron event:', error);
@@ -1485,6 +1544,28 @@ app.get("/api/notifications/status", requireApiKey, async (_req, res) => {
         remaining,
         windowRemainingMs: windowRemaining
       }
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
+// GET /api/cron/webhook-url - Get the webhook URL for cron job configuration
+app.get("/api/cron/webhook-url", requireApiKey, async (req, res) => {
+  try {
+    // Determine the agent's public URL
+    const publicDomain = process.env.RAILWAY_PUBLIC_DOMAIN || 
+                        process.env.RAILWAY_STATIC_URL ||
+                        req.get('host');
+    
+    const protocol = publicDomain?.includes('localhost') ? 'http' : 'https';
+    const webhookUrl = `${protocol}://${publicDomain}/api/openclaw-cron-webhook`;
+    
+    res.json({
+      ok: true,
+      webhookUrl,
+      instructions: "Use this URL when creating OpenClaw cron jobs to enable frontend notifications",
+      example: `openclaw cron add --name "My Job" --cron "0 * * * *" --message "Do something" --webhook --webhook-url "${webhookUrl}"`
     });
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) });
