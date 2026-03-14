@@ -50,9 +50,6 @@ RUN mkdir -p /opt/skills-cache && \
     echo "Additional skills: ${ADDITIONAL_SKILLS:-none}" && \
     echo "" && \
     clawhub install duckduckgo-search --workdir /opt/skills-cache --no-input || echo "⚠ Failed: duckduckgo-search" && sleep 2 && \
-    clawhub install polymarket-odds --workdir /opt/skills-cache --no-input || echo "⚠ Failed: polymarket-odds" && sleep 2 && \
-    clawhub install hyperliquid-cli --workdir /opt/skills-cache --no-input || echo "⚠ Failed: hyperliquid-cli" && sleep 2 && \
-    clawhub install onchain --workdir /opt/skills-cache --no-input || echo "⚠ Failed: onchain" && sleep 2 && \
     if [ -n "$ADDITIONAL_SKILLS" ]; then \
         echo "Installing additional skills..." && \
         for skill in $ADDITIONAL_SKILLS; do \
