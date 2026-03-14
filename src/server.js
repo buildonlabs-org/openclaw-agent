@@ -12,6 +12,7 @@ import { WebSocketServer } from "ws";
 
 import { OpenClawGatewayClient } from "./gatewayClient.js";
 import { initializeWallet } from "./wallet.js";
+import { notifyCronJob, isNotificationConfigured } from "./notification-helper.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -738,6 +739,75 @@ app.get("/setup/healthz", async (_req, res) => {
   });
 });
 
+// OpenClaw Cron Webhook Endpoint
+// This receives finished events from OpenClaw cron jobs configured with delivery.mode = "webhook"
+app.post("/api/openclaw-cron-webhook", express.json({ limit: "1mb" }), async (req, res) => {
+  try {
+    const payload = req.body;
+    
+    // Validate it's a cron finished event
+    if (!payload || payload.type !== 'cron.finished') {
+      return res.status(400).json({ 
+        ok: false, 
+        error: 'Invalid payload', 
+        message: 'Expected cron.finished event' 
+      });
+    }
+
+    const { job, run } = payload;
+    
+    if (!job || !run) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Invalid payload',
+        message: 'Missing job or run data'
+      });
+    }
+
+    // Extract cron job details
+    const jobName = job.name || 'Unnamed Cron Job';
+    const status = run.status; // 'success', 'error', 'skipped'
+    const summary = run.summary || run.error || 'No summary available';
+    
+    // Build notification message
+    let message = summary;
+    if (status === 'success') {
+      message = `✅ ${summary}`;
+    } else if (status === 'error') {
+      message = `❌ ${summary}`;
+    } else if (status === 'skipped') {
+      message = `⏭️ ${summary}`;
+    }
+
+    // Send to launcher webhook
+    await notifyCronJob(
+      jobName,
+      message,
+      {
+        jobId: job.id || job.jobId,
+        status: run.status,
+        startedAt: run.startedAt,
+        endedAt: run.endedAt,
+        duration: run.duration,
+        schedule: job.schedule?.kind,
+        sessionTarget: job.sessionTarget
+      }
+    );
+
+    console.log(`[cron-webhook] Forwarded cron job: ${jobName} [${status}]`);
+    
+    res.json({ ok: true, received: true });
+    
+  } catch (error) {
+    console.error('[cron-webhook] Error processing cron event:', error);
+    res.status(500).json({ 
+      ok: false, 
+      error: 'Failed to process cron event',
+      message: error.message 
+    });
+  }
+});
+
 // Setup wizard routes
 app.get("/setup", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "setup.html"));
@@ -1380,6 +1450,69 @@ app.get("/api/status", requireApiKey, async (_req, res) => {
       stateDir: STATE_DIR,
       workspaceDir: WORKSPACE_DIR
     });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
+// GET /api/notifications/status - Check notification configuration status
+app.get("/api/notifications/status", requireApiKey, async (_req, res) => {
+  try {
+    const configured = isNotificationConfigured();
+    const { count, limit, remaining, windowRemaining } = await import('./notification-helper.js')
+      .then(m => m.getRateLimitStatus());
+    
+    res.json({
+      ok: true,
+      configured,
+      webhook: {
+        url: process.env.LAUNCHER_WEBHOOK_URL ? '[configured]' : null,
+        tokenSet: !!process.env.LAUNCHER_AGENT_TOKEN
+      },
+      rateLimit: {
+        count,
+        limit,
+        remaining,
+        windowRemainingMs: windowRemaining
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
+// POST /api/notifications/test - Send a test cron notification
+app.post("/api/notifications/test", requireApiKey, async (req, res) => {
+  try {
+    if (!isNotificationConfigured()) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Notifications not configured',
+        message: 'Set LAUNCHER_WEBHOOK_URL and LAUNCHER_AGENT_TOKEN environment variables'
+      });
+    }
+
+    const { title = 'Test Cron Notification', message = 'This is a test cron notification from OpenClaw Agent' } = req.body || {};
+    
+    // Send test cron notification
+    const data = { source: 'test-endpoint', timestamp: new Date().toISOString() };
+    const success = await notifyCronJob(title, message, data);
+
+    if (success) {
+      res.json({
+        ok: true,
+        message: 'Test notification sent successfully',
+        type: 'cron',
+        title,
+        sent: true
+      });
+    } else {
+      res.status(500).json({
+        ok: false,
+        error: 'Failed to send notification',
+        message: 'Check server logs for details'
+      });
+    }
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) });
   }

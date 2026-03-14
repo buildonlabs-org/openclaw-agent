@@ -12,8 +12,29 @@ Deploy an OpenClaw AI gateway to Railway with:
 - 🎯 **Skill Management** - Install, update, and manage ClawHub skills via API
 - 💬 **Chat API** - Send messages to your agent and receive responses
 - 💾 **Persistent State** - Configuration survives redeploys with Railway volumes
+- 🔔 **Webhook Notifications** - Real-time cron job and event updates to launcher UI
 
 ## ✨ New Features
+
+### 🔔 OpenClaw Cron Notifications
+
+Your agent forwards OpenClaw cron job completions to the launcher frontend:
+- ⏰ Cron job success/failure notifications
+- 📊 Job metadata (duration, status, schedule)
+- 🎯 Real-time visibility into scheduled tasks
+
+Configure your OpenClaw cron jobs with webhook delivery:
+```bash
+openclaw cron add \
+  --name "Morning Brief" \
+  --cron "0 7 * * *" \
+  --session isolated \
+  --message "Summarize overnight updates." \
+  --webhook \
+  --webhook-url "https://your-agent.railway.app/api/openclaw-cron-webhook"
+```
+
+See [OPENCLAW-CRON-NOTIFICATIONS.md](OPENCLAW-CRON-NOTIFICATIONS.md) for complete guide.
 
 ### 🔐 Crypto Wallet
 
