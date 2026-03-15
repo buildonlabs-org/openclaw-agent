@@ -758,20 +758,43 @@ app.post("/api/openclaw-cron-webhook", express.json({ limit: "1mb" }), async (re
       });
     }
 
-    // Handle different OpenClaw webhook payload formats
+    // Handle different webhook payload formats
     let job, run, eventType;
     
-    // Format 1: Standard cron.finished event
-    if (payload.type === 'cron.finished') {
+    // Format 0: Agent-posted full content (NEW - primary format)
+    // Agents POST their full results directly with this structure
+    if (payload.content && (payload.jobName || payload.status)) {
+      job = {
+        id: payload.jobId || 'agent-posted',
+        name: payload.jobName || 'Cron Job',
+        schedule: payload.schedule
+      };
+      run = {
+        status: payload.status || 'completed',
+        summary: null, // No summary needed - we have full content
+        output: payload.content, // Full content from agent
+        result: payload.content,
+        response: payload.content,
+        startedAt: payload.startedAt || payload.timestamp,
+        endedAt: payload.endedAt || new Date().toISOString(),
+        duration: payload.duration || 0
+      };
+      eventType = 'agent-posted';
+      console.log('[cron-webhook] ✅ Received agent-posted full content');
+    }
+    // Format 1: Standard cron.finished event (OLD - deprecated)
+    else if (payload.type === 'cron.finished') {
       job = payload.job;
       run = payload.run;
       eventType = 'cron.finished';
+      console.log('[cron-webhook] ⚠️ Received old cron.finished event (only has summary)');
     }
-    // Format 2: Direct job/run structure (OpenClaw may send this)
+    // Format 2: Direct job/run structure (OLD - deprecated)
     else if (payload.job && payload.run) {
       job = payload.job;
       run = payload.run;
       eventType = 'cron-event';
+      console.log('[cron-webhook] ⚠️ Received old cron-event format (only has summary)');
     }
     // Format 3: Flat structure with job details at top level
     else if (payload.jobId || payload.id) {
@@ -838,10 +861,11 @@ app.post("/api/openclaw-cron-webhook", express.json({ limit: "1mb" }), async (re
     let fullOutput = run?.output || run?.result || run?.response || run?.text;
     const summary = run?.summary || run?.error || 'Completed';
     
+    // Only try to fetch from CLI if using old event format (not agent-posted)
     // If we only have a summary and there's a runId, try to fetch full run details
     const runId = run?.runId || run?.id;
-    if (!fullOutput && runId) {
-      console.log(`[cron-webhook] Attempting to fetch full run details for runId: ${runId}`);
+    if (eventType !== 'agent-posted' && !fullOutput && runId) {
+      console.log(`[cron-webhook] ⚠️ Old format detected - attempting to fetch full run details for runId: ${runId}`);
       try {
         const result = await runCmd(OPENCLAW_CLI, ["cron", "runs", "--id", job?.id || job?.jobId, "--limit", "1", "--json"]);
         if (result.code === 0) {
@@ -3186,27 +3210,37 @@ app.post("/api/chat", requireApiKey, async (req, res) => {
       }
     }
     
-    // Auto-inject webhook URL for cron job requests
+    // Auto-inject webhook instructions for cron job requests
     let finalMessage = message;
     const isCronRequest = detectCronRequest(message);
     
     if (isCronRequest) {
       const webhookUrl = getAgentWebhookUrl(req);
-      console.log('[api/chat] Detected cron request, injecting webhook URL:', webhookUrl);
+      console.log('[api/chat] Detected cron request, injecting webhook instructions:', webhookUrl);
       
-      // Check if webhook URL is already specified in the message
-      const hasWebhookUrl = message.includes(webhookUrl) || message.includes('webhook-url');
+      // Check if webhook instructions are already in the message
+      const hasWebhookInstructions = message.includes(webhookUrl) || 
+                                     message.includes('POST') && message.includes('webhook');
       
-      if (!hasWebhookUrl) {
-        // Inject webhook configuration in a format OpenClaw understands
+      if (!hasWebhookInstructions) {
+        // Inject instructions for agent to POST full results themselves
+        // This avoids OpenClaw's webhook delivery which only sends summaries
         finalMessage = `${message}
 
-When creating this cron job, configure it with webhook delivery mode and set the webhook URL to: ${webhookUrl}
+CRITICAL: After completing your work, POST the FULL result to this webhook URL: ${webhookUrl}
 
-This ensures completion notifications are sent to the launcher UI.`;
-        console.log('[api/chat] Injected webhook configuration');
+Use curl, fetch, or any HTTP tool you have available. The payload should be JSON:
+{
+  "jobName": "your job name",
+  "status": "success",
+  "content": "your complete response here",
+  "timestamp": "ISO timestamp"
+}
+
+Set the cron job's delivery mode to "none" since you're posting the result yourself. This ensures the launcher UI receives your complete response, not just a summary.`;
+        console.log('[api/chat] Injected webhook POST instructions');
       } else {
-        console.log('[api/chat] Webhook URL already specified, skipping injection');
+        console.log('[api/chat] Webhook instructions already present, skipping injection');
       }
     }
     
@@ -3313,19 +3347,17 @@ This ensures completion notifications are sent to the launcher UI.`;
 });
 
 /**
- * Verify all cron jobs have webhook delivery configured
- * Automatically fixes any that are missing it
+ * Verify all cron jobs use delivery mode "none" (agent posts results themselves)
+ * Automatically fixes any using the old webhook delivery mode
  */
 async function verifyCronWebhooksAfterChat(req) {
   try {
     // List all cron jobs
     const result = await runCmd(OPENCLAW_CLI, ["cron", "list", "--json"]);
     if (result.code !== 0) {
-      console.warn('[verify-webhooks] Failed to list cron jobs:', result.error);
+      console.warn('[verify-delivery] Failed to list cron jobs:', result.error);
       return 0;
     }
-    
-    const webhookUrl = getAgentWebhookUrl(req);
     
     // Parse and normalize the output
     let jobs = [];
@@ -3337,43 +3369,43 @@ async function verifyCronWebhooksAfterChat(req) {
         jobs = parsed.jobs || parsed.items || parsed.data || [parsed];
       }
     } catch (parseErr) {
-      console.error('[verify-webhooks] Failed to parse JSON:', parseErr.message);
+      console.error('[verify-delivery] Failed to parse JSON:', parseErr.message);
       return 0;
     }
     
     let fixedCount = 0;
     
     for (const job of jobs) {
-      // Check if job has webhook delivery configured
-      const hasWebhook = job.delivery?.mode === 'webhook';
-      const correctUrl = job.delivery?.to === webhookUrl;
+      // Check if job is using old webhook delivery mode (only sends summaries)
+      const usesOldWebhookMode = job.delivery?.mode === 'webhook';
       
-      if (!hasWebhook || !correctUrl) {
-        console.log(`[verify-webhooks] Fixing cron job: ${job.name} (${job.id})`);
+      if (usesOldWebhookMode) {
+        console.log(`[verify-delivery] Fixing cron job to use delivery=none: ${job.name} (${job.id})`);
+        console.log(`[verify-delivery] Agent will POST full results themselves instead`);
         
-        // Update the job to add webhook delivery
+        // Update the job to use delivery mode "none"
+        // The agent will POST full results to the webhook themselves
         const updateResult = await runCmd(OPENCLAW_CLI, [
           "cron", "update", job.id,
-          "--webhook",
-          "--webhook-url", webhookUrl
+          "--delivery", "none"
         ]);
         
         if (updateResult.code === 0) {
-          console.log(`[verify-webhooks] ✅ Fixed: ${job.name}`);
+          console.log(`[verify-delivery] ✅ Fixed: ${job.name} - now uses delivery=none`);
           fixedCount++;
         } else {
-          console.error(`[verify-webhooks] ❌ Failed to fix: ${job.name}`, updateResult.error);
+          console.error(`[verify-delivery] ❌ Failed to fix: ${job.name}`, updateResult.error);
         }
       }
     }
     
     if (fixedCount > 0) {
-      console.log(`[verify-webhooks] Fixed ${fixedCount} cron job(s) with missing webhooks`);
+      console.log(`[verify-delivery] Fixed ${fixedCount} cron job(s) to use delivery=none`);
     }
     
     return fixedCount;
   } catch (error) {
-    console.error('[verify-webhooks] Error during verification:', error);
+    console.error('[verify-delivery] Error during verification:', error);
     return 0;
   }
 }
@@ -3799,7 +3831,7 @@ function getAgentWebhookUrl(req) {
 }
 
 /**
- * Start periodic audit to ensure all cron jobs have webhook delivery
+ * Start periodic audit to ensure all cron jobs use delivery=none
  * Runs every 5 minutes
  */
 let periodicAuditInterval = null;
@@ -3812,7 +3844,7 @@ function startPeriodicCronWebhookAudit() {
   
   const AUDIT_INTERVAL = 5 * 60 * 1000; // 5 minutes
   
-  console.log('[periodic-audit] Starting cron webhook audit (every 5 minutes)');
+  console.log('[periodic-audit] Starting cron delivery mode audit (every 5 minutes)');
   
   // Run immediately on start
   performCronWebhookAudit();
@@ -3825,6 +3857,7 @@ function startPeriodicCronWebhookAudit() {
 
 /**
  * Perform the actual audit - check and fix cron jobs
+ * Ensures all jobs use delivery=none so agents POST full results themselves
  */
 async function performCronWebhookAudit() {
   try {
@@ -3833,15 +3866,13 @@ async function performCronWebhookAudit() {
       return;
     }
     
-    console.log('[periodic-audit] Checking cron jobs for webhook delivery...');
+    console.log('[periodic-audit] Checking cron jobs for delivery mode...');
     
     const result = await runCmd(OPENCLAW_CLI, ["cron", "list", "--json"]);
     if (result.code !== 0) {
       console.warn('[periodic-audit] Failed to list cron jobs');
       return;
     }
-    
-    const webhookUrl = getAgentWebhookUrl(null);
     
     // Parse and normalize the output
     let jobs = [];
@@ -3860,20 +3891,19 @@ async function performCronWebhookAudit() {
     let fixedCount = 0;
     
     for (const job of jobs) {
-      const hasWebhook = job.delivery?.mode === 'webhook';
-      const correctUrl = job.delivery?.to === webhookUrl;
+      // Check if job is using old webhook delivery mode (only sends summaries)
+      const usesOldWebhookMode = job.delivery?.mode === 'webhook';
       
-      if (!hasWebhook || !correctUrl) {
-        console.log(`[periodic-audit] Fixing cron job: ${job.name} (${job.id})`);
+      if (usesOldWebhookMode) {
+        console.log(`[periodic-audit] Fixing cron job to use delivery=none: ${job.name} (${job.id})`);
         
         const updateResult = await runCmd(OPENCLAW_CLI, [
           "cron", "update", job.id,
-          "--webhook",
-          "--webhook-url", webhookUrl
+          "--delivery", "none"
         ]);
         
         if (updateResult.code === 0) {
-          console.log(`[periodic-audit] ✅ Fixed: ${job.name}`);
+          console.log(`[periodic-audit] ✅ Fixed: ${job.name} - now uses delivery=none`);
           fixedCount++;
         } else {
           console.error(`[periodic-audit] ❌ Failed to fix: ${job.name}`);
@@ -3882,9 +3912,9 @@ async function performCronWebhookAudit() {
     }
     
     if (fixedCount > 0) {
-      console.log(`[periodic-audit] Fixed ${fixedCount} cron job(s) with missing webhooks`);
+      console.log(`[periodic-audit] Fixed ${fixedCount} cron job(s) to use delivery=none`);
     } else if (jobs.length > 0) {
-      console.log(`[periodic-audit] All ${jobs.length} cron job(s) have webhook delivery ✓`);
+      console.log(`[periodic-audit] All ${jobs.length} cron job(s) using correct delivery mode ✓`);
     }
   } catch (error) {
     console.error('[periodic-audit] Error during audit:', error.message);
