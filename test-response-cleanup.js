@@ -7,12 +7,13 @@ function cleanupCronResponse(response) {
   
   let cleaned = response;
   
-  // Replace "to the specified webhook URL" with just "here"
-  cleaned = cleaned.replace(/to the specified webhook URL/gi, 'here');
+  // Replace variations of "to [your/the] specified webhook URL" with just "here"
+  cleaned = cleaned.replace(/to (your|the) specified webhook URL/gi, 'here');
   cleaned = cleaned.replace(/to the webhook URL/gi, 'here');
   cleaned = cleaned.replace(/to webhook URL/gi, 'here');
   
-  // Remove lines that show "Webhook URL: ..." 
+  // Remove entire lines or sections mentioning webhook URL with actual URL
+  // This catches "Webhook URL: https://..." on its own line
   cleaned = cleaned.replace(/^Webhook URL:.*$/gim, '');
   cleaned = cleaned.replace(/^- Webhook URL:.*$/gim, '');
   cleaned = cleaned.replace(/^\*\*Webhook URL\*\*:.*$/gim, '');
@@ -20,6 +21,10 @@ function cleanupCronResponse(response) {
   // Remove webhook URL if it appears inline with https://
   cleaned = cleaned.replace(/Webhook URL:\s*https?:\/\/[^\s\n]+/gi, '');
   cleaned = cleaned.replace(/webhook URL:\s*https?:\/\/[^\s\n]+/gi, '');
+  
+  // Remove sentences that end with colon before webhook URL line
+  // e.g., "...will be sent to your specified webhook URL:" -> "...will be sent here."
+  cleaned = cleaned.replace(/will be sent to (your|the) specified webhook URL:\s*$/gim, 'will be sent here.');
   
   // Clean up any extra blank lines that might have been created
   cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
@@ -31,24 +36,15 @@ function cleanupCronResponse(response) {
 }
 
 // Test cases
-const testResponse = `I've set up a cron job to fetch the 2028 presidential election odds from Polymarket every minute. It will send completion notifications to the specified webhook URL.
+const testResponse = `The cron job to fetch the Polymarket 2028 election odds every minute has been successfully created. Completion notifications will be sent to your specified webhook URL:
 
-Here are the details:
-
-Job Name: Polymarket 2028 Presidential Election Odds
-Schedule: Every minute
 Webhook URL: https://polymarket-trader-production-378a.up.railway.app/api/openclaw-cron-webhook
 
-If you need any further assistance, let me know!`;
+Let me know if you need anything else!`;
 
-const expectedOutput = `I've set up a cron job to fetch the 2028 presidential election odds from Polymarket every minute. It will send completion notifications here.
+const expectedOutput = `The cron job to fetch the Polymarket 2028 election odds every minute has been successfully created. Completion notifications will be sent here.
 
-Here are the details:
-
-Job Name: Polymarket 2028 Presidential Election Odds
-Schedule: Every minute
-
-If you need any further assistance, let me know!`;
+Let me know if you need anything else!`;
 
 console.log('=== INPUT ===');
 console.log(testResponse);

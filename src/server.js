@@ -3389,12 +3389,16 @@ function cleanupCronResponse(response) {
   
   let cleaned = response;
   
-  // Replace "to the specified webhook URL" with just "here"
-  cleaned = cleaned.replace(/to the specified webhook URL/gi, 'here');
+  // Replace variations of "to [your/the] specified webhook URL:" (with colon) with "here."
+  cleaned = cleaned.replace(/to (your|the) specified webhook URL:\s*/gi, 'here.\n');
+  
+  // Also handle without colon
+  cleaned = cleaned.replace(/to (your|the) specified webhook URL/gi, 'here');
   cleaned = cleaned.replace(/to the webhook URL/gi, 'here');
   cleaned = cleaned.replace(/to webhook URL/gi, 'here');
   
-  // Remove lines that show "Webhook URL: ..." 
+  // Remove entire lines or sections mentioning webhook URL with actual URL
+  // This catches "Webhook URL: https://..." on its own line
   cleaned = cleaned.replace(/^Webhook URL:.*$/gim, '');
   cleaned = cleaned.replace(/^- Webhook URL:.*$/gim, '');
   cleaned = cleaned.replace(/^\*\*Webhook URL\*\*:.*$/gim, '');
