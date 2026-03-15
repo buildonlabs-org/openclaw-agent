@@ -3131,50 +3131,6 @@ app.post("/api/chat", requireApiKey, async (req, res) => {
       });
     }
     
-    // Check for skill usage and validate their requirements
-    const mentionedSkills = detectMentionedSkills(message);
-    if (mentionedSkills.length > 0) {
-      const missingRequirements = [];
-      
-      for (const skillSlug of mentionedSkills) {
-        const requirementCheck = checkSkillRequirements(skillSlug);
-        if (requirementCheck) {
-          missingRequirements.push(requirementCheck);
-        }
-      }
-      
-      // If any skills have missing requirements, return helpful message as if from agent
-      if (missingRequirements.length > 0) {
-        console.log(`[api/chat] Skills require configuration: ${mentionedSkills.join(', ')}`);
-        
-        // Craft a friendly message that looks like it came from the agent
-        let responseMessage = `I'd love to help you with ${mentionedSkills.length === 1 ? 'that' : 'those skills'}, but I need some configuration first!\n\n`;
-        
-        // Add instructions for each skill
-        for (const req of missingRequirements) {
-          responseMessage += req.setupInstructions + '\n';
-          if (missingRequirements.length > 1 && req !== missingRequirements[missingRequirements.length - 1]) {
-            responseMessage += '\n---\n\n';
-          }
-        }
-        
-        responseMessage += '\n📚 **Need more help?** Check out the [configuration guide](https://github.com/buildonlabs-org/openclaw-agent#environment-variables)\n';
-        responseMessage += '\n💡 Once you\'ve added the required API keys in Settings, I\'ll be ready to help!';
-        
-        // Return as a successful response that frontend can display directly
-        return res.json({
-          ok: true,
-          agentId,
-          sessionKey: sessionKey || `api-session-${Date.now()}`,
-          response: responseMessage,
-          timestamp: new Date().toISOString(),
-          requiresConfiguration: true,
-          skills: mentionedSkills,
-          missingVars: [...new Set(missingRequirements.flatMap(req => req.missingVars))]
-        });
-      }
-    }
-    
     // Ensure gateway is running
     if (!isGatewayReady()) {
       await ensureGatewayRunning();
@@ -3220,6 +3176,56 @@ IMPORTANT: Configure this cron job with webhook delivery to ${webhookUrl} so com
         sessionKey: finalSessionKey,
         text: finalMessage
       });
+      
+      // Check if the response indicates a configuration/ACP runtime error
+      const isConfigError = response && (
+        response.toLowerCase().includes('acp runtime') ||
+        response.toLowerCase().includes('configuration issue') ||
+        response.toLowerCase().includes('unable to') && (
+          response.toLowerCase().includes('trade') ||
+          response.toLowerCase().includes('post') ||
+          response.toLowerCase().includes('send')
+        )
+      );
+      
+      if (isConfigError) {
+        // Agent returned a configuration error - check which skills need setup
+        console.log('[api/chat] Agent returned configuration error, checking skill requirements...');
+        
+        const mentionedSkills = detectMentionedSkills(message);
+        const missingRequirements = [];
+        
+        for (const skillSlug of mentionedSkills) {
+          const requirementCheck = checkSkillRequirements(skillSlug);
+          if (requirementCheck) {
+            missingRequirements.push(requirementCheck);
+          }
+        }
+        
+        if (missingRequirements.length > 0) {
+          console.log(`[api/chat] Configuration needed for skills: ${mentionedSkills.join(', ')}`);
+          
+          // Combine all setup instructions
+          const allInstructions = missingRequirements
+            .map(req => req.setupInstructions)
+            .join('\n---\n\n');
+          
+          const allMissingVars = [...new Set(
+            missingRequirements.flatMap(req => req.missingVars)
+          )];
+          
+          return res.status(400).json({
+            ok: false,
+            error: 'Skill requirements not configured',
+            skills: mentionedSkills,
+            missingRequirements,
+            missingVars: allMissingVars,
+            setupInstructions: allInstructions,
+            helpUrl: 'https://github.com/buildonlabs-org/openclaw-agent#environment-variables',
+            originalResponse: response
+          });
+        }
+      }
       
       // VERIFICATION STEP: Check if any cron jobs were created/modified without webhooks
       // This catches cases where pattern detection missed or agent created cron differently
