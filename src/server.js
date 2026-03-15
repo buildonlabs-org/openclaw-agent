@@ -783,6 +783,7 @@ app.post("/api/openclaw-cron-webhook", express.json({ limit: "1mb" }), async (re
       run = {
         status: payload.status || 'completed',
         summary: payload.summary || payload.message || 'Job completed',
+        output: payload.output || payload.result || payload.response,
         error: payload.error,
         startedAt: payload.startedAt,
         endedAt: payload.endedAt,
@@ -801,6 +802,7 @@ app.post("/api/openclaw-cron-webhook", express.json({ limit: "1mb" }), async (re
       run = {
         status: payload.status || payload.state || 'completed',
         summary: payload.text || payload.message || 'Job completed',
+        output: payload.output || payload.result || payload.response,
         error: payload.error,
         startedAt: payload.startedAt || payload.timestamp,
         endedAt: payload.endedAt || new Date().toISOString(),
@@ -818,6 +820,7 @@ app.post("/api/openclaw-cron-webhook", express.json({ limit: "1mb" }), async (re
       run = {
         status: 'completed',
         summary: payload.message || payload.text || JSON.stringify(payload).substring(0, 100),
+        output: payload.output || payload.result || payload.response || payload.data
       };
       eventType = 'unknown-format';
     }
@@ -829,16 +832,57 @@ app.post("/api/openclaw-cron-webhook", express.json({ limit: "1mb" }), async (re
     // Extract cron job details
     const jobName = job?.name || 'Unnamed Cron Job';
     const status = run?.status || 'completed';
+    
+    // Try to get the full output first (may contain complete data from skills)
+    // then fall back to summary if output not available
+    let fullOutput = run?.output || run?.result || run?.response || run?.text;
     const summary = run?.summary || run?.error || 'Completed';
     
+    // If we only have a summary and there's a runId, try to fetch full run details
+    const runId = run?.runId || run?.id;
+    if (!fullOutput && runId) {
+      console.log(`[cron-webhook] Attempting to fetch full run details for runId: ${runId}`);
+      try {
+        const result = await runCmd(OPENCLAW_CLI, ["cron", "runs", "--id", job?.id || job?.jobId, "--limit", "1", "--json"]);
+        if (result.code === 0) {
+          const runs = JSON.parse(result.output);
+          const latestRun = Array.isArray(runs) ? runs[0] : runs;
+          
+          if (latestRun) {
+            console.log('[cron-webhook] Latest run data keys:', Object.keys(latestRun));
+            
+            // Extract full output from run data
+            fullOutput = latestRun.output || 
+                        latestRun.result || 
+                        latestRun.response || 
+                        latestRun.text ||
+                        latestRun.content;
+            
+            if (fullOutput) {
+              console.log(`[cron-webhook] ✅ Retrieved full output (${fullOutput.length} chars)`);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[cron-webhook] Failed to fetch full run details:', err.message);
+        // Fall back to summary
+      }
+    }
+    
+    // Use full output if available, otherwise use summary
+    const content = fullOutput || summary;
+    
+    console.log('[cron-webhook] Content type:', fullOutput ? 'full output' : 'summary only');
+    console.log('[cron-webhook] Content length:', content?.length || 0);
+    
     // Build notification message
-    let message = summary;
+    let message = content;
     if (status === 'success' || status === 'completed' || status === 'ok') {
-      message = `✅ ${summary}`;
+      message = `✅ ${content}`;
     } else if (status === 'error' || status === 'failed') {
-      message = `❌ ${summary}`;
+      message = `❌ ${content}`;
     } else if (status === 'skipped') {
-      message = `⏭️ ${summary}`;
+      message = `⏭️ ${content}`;
     }
 
     const notificationData = {
@@ -3236,11 +3280,14 @@ This ensures completion notifications are sent to the launcher UI.`;
       // This catches cases where pattern detection missed or agent created cron differently
       const cronJobsFixed = await verifyCronWebhooksAfterChat(req);
       
+      // Clean up webhook URL details from response for cleaner user experience
+      const cleanedResponse = cleanupCronResponse(response);
+      
       res.json({
         ok: true,
         agentId,
         sessionKey: finalSessionKey,
-        response,
+        response: cleanedResponse,
         timestamp: new Date().toISOString(),
         cronDetected: isCronRequest,
         cronJobsFixed // Number of cron jobs that were automatically fixed
@@ -3329,6 +3376,40 @@ async function verifyCronWebhooksAfterChat(req) {
     console.error('[verify-webhooks] Error during verification:', error);
     return 0;
   }
+}
+
+/**
+ * Clean up agent response by removing webhook URL details
+ * Makes responses cleaner for end users
+ */
+function cleanupCronResponse(response) {
+  if (!response || typeof response !== 'string') {
+    return response;
+  }
+  
+  let cleaned = response;
+  
+  // Replace "to the specified webhook URL" with just "here"
+  cleaned = cleaned.replace(/to the specified webhook URL/gi, 'here');
+  cleaned = cleaned.replace(/to the webhook URL/gi, 'here');
+  cleaned = cleaned.replace(/to webhook URL/gi, 'here');
+  
+  // Remove lines that show "Webhook URL: ..." 
+  cleaned = cleaned.replace(/^Webhook URL:.*$/gim, '');
+  cleaned = cleaned.replace(/^- Webhook URL:.*$/gim, '');
+  cleaned = cleaned.replace(/^\*\*Webhook URL\*\*:.*$/gim, '');
+  
+  // Remove webhook URL if it appears inline with https://
+  cleaned = cleaned.replace(/Webhook URL:\s*https?:\/\/[^\s\n]+/gi, '');
+  cleaned = cleaned.replace(/webhook URL:\s*https?:\/\/[^\s\n]+/gi, '');
+  
+  // Clean up any extra blank lines that might have been created
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
+  
+  // Trim any trailing whitespace
+  cleaned = cleaned.trim();
+  
+  return cleaned;
 }
 
 /**
