@@ -3150,14 +3150,19 @@ app.post("/api/chat", requireApiKey, async (req, res) => {
       const webhookUrl = getAgentWebhookUrl(req);
       console.log('[api/chat] Detected cron request, injecting webhook URL:', webhookUrl);
       
-      // Append webhook instructions if not already mentioned
-      if (!message.toLowerCase().includes('webhook')) {
+      // Check if webhook URL is already specified in the message
+      const hasWebhookUrl = message.includes(webhookUrl) || message.includes('webhook-url');
+      
+      if (!hasWebhookUrl) {
+        // Inject webhook configuration in a format OpenClaw understands
         finalMessage = `${message}
 
-IMPORTANT: Configure this cron job with webhook delivery to ${webhookUrl} so completion notifications are sent to the launcher UI.`;
-        console.log('[api/chat] Injected webhook instructions');
+When creating this cron job, configure it with webhook delivery mode and set the webhook URL to: ${webhookUrl}
+
+This ensures completion notifications are sent to the launcher UI.`;
+        console.log('[api/chat] Injected webhook configuration');
       } else {
-        console.log('[api/chat] Webhook already mentioned in message, skipping injection');
+        console.log('[api/chat] Webhook URL already specified, skipping injection');
       }
     }
     
@@ -3328,26 +3333,128 @@ async function verifyCronWebhooksAfterChat(req) {
 
 /**
  * Detect if a message is requesting to create/configure a cron job
+ * Supports English and basic patterns in other major languages
  */
 function detectCronRequest(message) {
   const lowerMessage = message.toLowerCase();
   
   // Patterns that indicate cron job creation/configuration
   const cronPatterns = [
-    /\bcron\s+job\b/,
-    /\bcron\s+add\b/,
-    /\bcreate.*cron/,
-    /\bschedule.*task/,
-    /\bschedule.*job/,
-    /\brecurring.*task/,
-    /\bautomated.*task/,
-    /\bset.*reminder/,
-    /\bruns?\s+every\b/,
-    /\bevery\s+\d+\s+(minute|hour|day|week)/,
-    /\bdaily\s+(at|trigger|run)/,
-    /\bhourly\s+(trigger|run)/,
-    /\bweekly\s+(trigger|run)/,
-    /at\s+\d+\s*(am|pm)/,
+    // ========== ENGLISH PATTERNS ==========
+    
+    // Explicit cron mentions
+    /\bcron\s+job\b/i,
+    /\bcron\s+add\b/i,
+    /\bcreate.*cron/i,
+    /\bschedule.*task/i,
+    /\bschedule.*job/i,
+    /\brecurring.*task/i,
+    /\bautomated.*task/i,
+    /\bset.*reminder/i,
+    /\bruns?\s+every\b/i,
+    
+    // Time frequency patterns - "every X"
+    /\bevery\s+\d*\s*(second|minute|hour|day|week|month|year)/i,
+    /\bevery\s+(few|couple|other)\s+(seconds?|minutes?|hours?|days?)/i,
+    /\beach\s+\d*\s*(minute|hour|day|week|month)/i,
+    
+    // Action verbs + "every" - broad coverage
+    /\b(send|notify|alert|tell|inform|ping|message|email|text)\s+(me|us)?\s*.*\bevery\b/i,
+    /\b(check|monitor|watch|track|scan|poll|query|fetch|get|pull|retrieve)\s*.*\bevery\b/i,
+    /\b(update|report|notify|alert|show|give|provide|share)\s+(me|us)?\s*.*\bevery\b/i,
+    
+    // "Keep me" patterns
+    /\bkeep\s+(me|us)\s+(updated|informed|notified|posted|in\s+the\s+loop)/i,
+    /\bkeep\s+(track|tabs|an\s+eye)\s+(of|on)/i,
+    
+    // "Let me know" patterns  
+    /\blet\s+(me|us)\s+know.*\b(every|when|if)/i,
+    /\binform\s+(me|us).*\b(every|regularly|periodically)/i,
+    
+    // Monitoring/watching language
+    /\bmonitor\s+(this|that|the|it|\w+)\s+(for\s+me|regularly|continuously)?/i,
+    /\bwatch\s+(for|out\s+for).*\b(changes?|updates?)/i,
+    /\bstay\s+(on\s+top\s+of|informed|updated)/i,
+    /\bfollow\s+.*\b(regularly|closely)/i,
+    /\bobserve\s+.*\b(continuously|regularly)/i,
+    
+    // "I want/need" patterns with frequency
+    /\bi\s+(want|need|would\s+like).*\bevery\b/i,
+    /\bi\s+(want|need|would\s+like).*\b(daily|hourly|weekly|regularly)/i,
+    
+    // Update/notification requests
+    /\b(get|receive|have)\s+(updates?|notifications?|alerts?).*\b(every|regular|periodic)/i,
+    /\bnotify.*\b(every|when|if).*\b(minute|hour|day|changes?)/i,
+    
+    // Time-based triggers
+    /\bdaily\s+(at|by|trigger|run|send|notify|check|update)/i,
+    /\bhourly\s+(trigger|run|send|notify|check|update)/i,
+    /\bweekly\s+(trigger|run|send|notify|check|update)/i,
+    /\bmonthly\s+(trigger|run|send|notify|check|update)/i,
+    /\bat\s+\d+\s*(am|pm|:\d+)/i,
+    /\bevery\s+(morning|evening|night|noon)/i,
+    
+    // Frequency adverbs
+    /\b(regularly|periodically|continuously|constantly|repeatedly|routinely)\s+(check|send|notify|update|monitor)/i,
+    /\b(check|send|notify|update|monitor).*\b(regularly|periodically|continuously|constantly|repeatedly)/i,
+    
+    // Interval patterns
+    /\bat\s+\d+\s+(minute|hour|day)\s+intervals?/i,
+    /\bon\s+an?\s+(hourly|daily|weekly|regular|periodic)\s+basis/i,
+    
+    // "Make sure" / "Ensure" patterns
+    /\b(make\s+sure|ensure|see\s+to\s+it)\s+.*\b(every|regularly|continuously)/i,
+    
+    // Automation indicators
+    /\bautomate.*\b(checking|monitoring|sending|notifying)/i,
+    /\bset\s+up.*\b(automatic|automated|recurring)/i,
+    
+    // Reminder patterns
+    /\bremind\s+(me|us).*\bevery\b/i,
+    /\breminder.*\b(every|daily|hourly|weekly)/i,
+    
+    // ========== SPANISH PATTERNS ==========
+    /\bcada\s+\d*\s*(segundo|minuto|hora|día|dia|semana|mes)/i,  // "cada X" = "every X"
+    /\b(enviar|notificar|avisar|informar).*\bcada\b/i,            // "send/notify every"
+    /\b(verificar|monitorear|revisar).*\bcada\b/i,                // "check/monitor every"
+    /\bdiariamente\b/i,                                            // "daily"
+    /\bcada\s+(mañana|tarde|noche)/i,                             // "every morning/afternoon/night"
+    /\bmantenerme\s+(actualizado|informado)/i,                    // "keep me updated/informed"
+    
+    // ========== FRENCH PATTERNS ==========
+    /\bchaque\s+\d*\s*(seconde|minute|heure|jour|semaine|mois)/i, // "chaque X" = "every X"
+    /\b(envoyer|notifier|informer).*\bchaque\b/i,                 // "send/notify every"
+    /\b(vérifier|surveiller|contrôler).*\bchaque\b/i,            // "check/monitor every"
+    /\btous\s+les\s+(jours|heures)/i,                             // "tous les jours" = "every day"
+    /\bquotidiennement\b/i,                                        // "daily"
+    /\bme\s+tenir\s+(au\s+courant|informé)/i,                     // "keep me informed"
+    
+    // ========== GERMAN PATTERNS ==========
+    /\bjede[ns]?\s+\d*\s*(Sekunde|Minute|Stunde|Tag|Woche|Monat)/i, // "jede X" = "every X"
+    /\b(senden|benachrichtigen|informieren).*\bjede/i,            // "send/notify every"
+    /\b(prüfen|überwachen|kontrollieren).*\bjede/i,              // "check/monitor every"
+    /\btäglich\b/i,                                               // "daily"
+    /\bstündlich\b/i,                                             // "hourly"
+    /\bmich\s+(auf\s+dem\s+Laufenden|informiert)\s+halten/i,    // "keep me informed"
+    
+    // ========== PORTUGUESE PATTERNS ==========
+    /\bcada\s+\d*\s*(segundo|minuto|hora|dia|semana|mês)/i,      // "cada X" = "every X"
+    /\b(enviar|notificar|avisar|informar).*\bcada\b/i,           // "send/notify every"
+    /\b(verificar|monitorar|verificar).*\bcada\b/i,              // "check/monitor every"
+    /\bdiariamente\b/i,                                           // "daily"
+    /\bme\s+manter\s+(atualizado|informado)/i,                   // "keep me updated"
+    
+    // ========== ITALIAN PATTERNS ==========
+    /\bogni\s+\d*\s*(secondo|minuto|ora|giorno|settimana|mese)/i, // "ogni X" = "every X"
+    /\b(inviare|notificare|avvisare).*\bogni\b/i,                // "send/notify every"
+    /\b(verificare|monitorare|controllare).*\bogni\b/i,          // "check/monitor every"
+    /\bquotidianamente\b/i,                                       // "daily"
+    /\btenermi\s+(aggiornato|informato)/i,                        // "keep me updated"
+    
+    // ========== CHINESE PATTERNS ==========
+    /每\s*\d*\s*(秒|分钟|小时|天|周|月)/,                          // "měi X" = "every X"
+    /定时|定期/,                                                    // "scheduled/regular"
+    /每天|每日/,                                                    // "every day/daily"
   ];
   
   return cronPatterns.some(pattern => pattern.test(lowerMessage));
