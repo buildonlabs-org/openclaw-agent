@@ -758,20 +758,43 @@ app.post("/api/openclaw-cron-webhook", express.json({ limit: "1mb" }), async (re
       });
     }
 
-    // Handle different OpenClaw webhook payload formats
+    // Handle different webhook payload formats
     let job, run, eventType;
     
-    // Format 1: Standard cron.finished event
-    if (payload.type === 'cron.finished') {
+    // Format 0: Agent-posted full content (NEW - primary format)
+    // Agents POST their full results directly with this structure
+    if (payload.content && (payload.jobName || payload.status)) {
+      job = {
+        id: payload.jobId || 'agent-posted',
+        name: payload.jobName || 'Cron Job',
+        schedule: payload.schedule
+      };
+      run = {
+        status: payload.status || 'completed',
+        summary: null, // No summary needed - we have full content
+        output: payload.content, // Full content from agent
+        result: payload.content,
+        response: payload.content,
+        startedAt: payload.startedAt || payload.timestamp,
+        endedAt: payload.endedAt || new Date().toISOString(),
+        duration: payload.duration || 0
+      };
+      eventType = 'agent-posted';
+      console.log('[cron-webhook] ✅ Received agent-posted full content');
+    }
+    // Format 1: Standard cron.finished event (OLD - deprecated)
+    else if (payload.type === 'cron.finished') {
       job = payload.job;
       run = payload.run;
       eventType = 'cron.finished';
+      console.log('[cron-webhook] ⚠️ Received old cron.finished event (only has summary)');
     }
-    // Format 2: Direct job/run structure (OpenClaw may send this)
+    // Format 2: Direct job/run structure (OLD - deprecated)
     else if (payload.job && payload.run) {
       job = payload.job;
       run = payload.run;
       eventType = 'cron-event';
+      console.log('[cron-webhook] ⚠️ Received old cron-event format (only has summary)');
     }
     // Format 3: Flat structure with job details at top level
     else if (payload.jobId || payload.id) {
@@ -783,6 +806,7 @@ app.post("/api/openclaw-cron-webhook", express.json({ limit: "1mb" }), async (re
       run = {
         status: payload.status || 'completed',
         summary: payload.summary || payload.message || 'Job completed',
+        output: payload.output || payload.result || payload.response,
         error: payload.error,
         startedAt: payload.startedAt,
         endedAt: payload.endedAt,
@@ -801,6 +825,7 @@ app.post("/api/openclaw-cron-webhook", express.json({ limit: "1mb" }), async (re
       run = {
         status: payload.status || payload.state || 'completed',
         summary: payload.text || payload.message || 'Job completed',
+        output: payload.output || payload.result || payload.response,
         error: payload.error,
         startedAt: payload.startedAt || payload.timestamp,
         endedAt: payload.endedAt || new Date().toISOString(),
@@ -818,6 +843,7 @@ app.post("/api/openclaw-cron-webhook", express.json({ limit: "1mb" }), async (re
       run = {
         status: 'completed',
         summary: payload.message || payload.text || JSON.stringify(payload).substring(0, 100),
+        output: payload.output || payload.result || payload.response || payload.data
       };
       eventType = 'unknown-format';
     }
@@ -829,16 +855,58 @@ app.post("/api/openclaw-cron-webhook", express.json({ limit: "1mb" }), async (re
     // Extract cron job details
     const jobName = job?.name || 'Unnamed Cron Job';
     const status = run?.status || 'completed';
+    
+    // Try to get the full output first (may contain complete data from skills)
+    // then fall back to summary if output not available
+    let fullOutput = run?.output || run?.result || run?.response || run?.text;
     const summary = run?.summary || run?.error || 'Completed';
     
+    // Only try to fetch from CLI if using old event format (not agent-posted)
+    // If we only have a summary and there's a runId, try to fetch full run details
+    const runId = run?.runId || run?.id;
+    if (eventType !== 'agent-posted' && !fullOutput && runId) {
+      console.log(`[cron-webhook] ⚠️ Old format detected - attempting to fetch full run details for runId: ${runId}`);
+      try {
+        const result = await runCmd(OPENCLAW_CLI, ["cron", "runs", "--id", job?.id || job?.jobId, "--limit", "1", "--json"]);
+        if (result.code === 0) {
+          const runs = JSON.parse(result.output);
+          const latestRun = Array.isArray(runs) ? runs[0] : runs;
+          
+          if (latestRun) {
+            console.log('[cron-webhook] Latest run data keys:', Object.keys(latestRun));
+            
+            // Extract full output from run data
+            fullOutput = latestRun.output || 
+                        latestRun.result || 
+                        latestRun.response || 
+                        latestRun.text ||
+                        latestRun.content;
+            
+            if (fullOutput) {
+              console.log(`[cron-webhook] ✅ Retrieved full output (${fullOutput.length} chars)`);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[cron-webhook] Failed to fetch full run details:', err.message);
+        // Fall back to summary
+      }
+    }
+    
+    // Use full output if available, otherwise use summary
+    const content = fullOutput || summary;
+    
+    console.log('[cron-webhook] Content type:', fullOutput ? 'full output' : 'summary only');
+    console.log('[cron-webhook] Content length:', content?.length || 0);
+    
     // Build notification message
-    let message = summary;
+    let message = content;
     if (status === 'success' || status === 'completed' || status === 'ok') {
-      message = `✅ ${summary}`;
+      message = `✅ ${content}`;
     } else if (status === 'error' || status === 'failed') {
-      message = `❌ ${summary}`;
+      message = `❌ ${content}`;
     } else if (status === 'skipped') {
-      message = `⏭️ ${summary}`;
+      message = `⏭️ ${content}`;
     }
 
     const notificationData = {
@@ -1550,6 +1618,74 @@ app.get("/api/notifications/status", requireApiKey, async (_req, res) => {
   }
 });
 
+// GET /api/cron/jobs - List all cron jobs
+app.get("/api/cron/jobs", requireApiKey, async (req, res) => {
+  try {
+    console.log('[cron-jobs] Listing cron jobs...');
+    
+    // List all cron jobs
+    const result = await runCmd(OPENCLAW_CLI, ["cron", "list", "--json"]);
+    if (result.code !== 0) {
+      return res.status(500).json({
+        ok: false,
+        error: 'Failed to list cron jobs',
+        details: result.error
+      });
+    }
+    
+    // Parse and normalize the output
+    let jobs = [];
+    try {
+      const parsed = JSON.parse(result.output);
+      console.log('[cron-jobs] Parsed output type:', typeof parsed, 'Is array:', Array.isArray(parsed));
+      
+      // Handle different response formats
+      if (Array.isArray(parsed)) {
+        jobs = parsed;
+      } else if (parsed && typeof parsed === 'object') {
+        // Check if it's wrapped in an object with a 'jobs' or 'items' key
+        if (Array.isArray(parsed.jobs)) {
+          jobs = parsed.jobs;
+        } else if (Array.isArray(parsed.items)) {
+          jobs = parsed.items;
+        } else if (Array.isArray(parsed.data)) {
+          jobs = parsed.data;
+        } else if (Object.keys(parsed).length > 0) {
+          // If it's a single job object, wrap it in an array
+          jobs = [parsed];
+        }
+      }
+    } catch (parseErr) {
+      console.error('[cron-jobs] Failed to parse JSON:', parseErr.message);
+      console.error('[cron-jobs] Raw output:', result.output);
+      return res.status(500).json({
+        ok: false,
+        error: 'Failed to parse cron list output',
+        details: parseErr.message,
+        rawOutput: result.output.substring(0, 500)
+      });
+    }
+    
+    const webhookUrl = getAgentWebhookUrl(req);
+    
+    // Add webhook status to each job
+    const jobsWithStatus = jobs.map(job => ({
+      ...job,
+      webhookConfigured: job.delivery?.mode === 'webhook' && job.delivery?.to === webhookUrl
+    }));
+    
+    res.json({
+      ok: true,
+      jobs: jobsWithStatus,
+      count: jobsWithStatus.length,
+      webhookUrl
+    });
+  } catch (err) {
+    console.error('[cron-jobs] Unexpected error:', err);
+    res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
 // GET /api/cron/webhook-url - Get the webhook URL for cron job configuration
 app.get("/api/cron/webhook-url", requireApiKey, async (req, res) => {
   try {
@@ -1588,7 +1724,40 @@ app.post("/api/cron/audit-webhooks", requireApiKey, async (req, res) => {
     }
     
     const webhookUrl = getAgentWebhookUrl(req);
-    const jobs = JSON.parse(result.output);
+    
+    // Parse and normalize the output
+    let jobs = [];
+    try {
+      const parsed = JSON.parse(result.output);
+      console.log('[audit-webhooks] Parsed output type:', typeof parsed, 'Is array:', Array.isArray(parsed));
+      console.log('[audit-webhooks] Parsed output:', JSON.stringify(parsed, null, 2));
+      
+      // Handle different response formats
+      if (Array.isArray(parsed)) {
+        jobs = parsed;
+      } else if (parsed && typeof parsed === 'object') {
+        // Check if it's wrapped in an object with a 'jobs' or 'items' key
+        if (Array.isArray(parsed.jobs)) {
+          jobs = parsed.jobs;
+        } else if (Array.isArray(parsed.items)) {
+          jobs = parsed.items;
+        } else if (Array.isArray(parsed.data)) {
+          jobs = parsed.data;
+        } else {
+          // If it's a single job object, wrap it in an array
+          jobs = [parsed];
+        }
+      }
+    } catch (parseErr) {
+      console.error('[audit-webhooks] Failed to parse JSON:', parseErr.message);
+      console.error('[audit-webhooks] Raw output:', result.output);
+      return res.status(500).json({
+        ok: false,
+        error: 'Failed to parse cron list output',
+        details: parseErr.message,
+        rawOutput: result.output.substring(0, 500)
+      });
+    }
     
     const summary = {
       total: jobs.length,
@@ -1597,6 +1766,16 @@ app.post("/api/cron/audit-webhooks", requireApiKey, async (req, res) => {
       failed: 0,
       details: []
     };
+    
+    if (jobs.length === 0) {
+      console.log('[audit-webhooks] No cron jobs found');
+      return res.json({
+        ok: true,
+        summary,
+        webhookUrl,
+        message: 'No cron jobs found'
+      });
+    }
     
     for (const job of jobs) {
       const hasWebhook = job.delivery?.mode === 'webhook';
@@ -1649,7 +1828,8 @@ app.post("/api/cron/audit-webhooks", requireApiKey, async (req, res) => {
       webhookUrl
     });
   } catch (err) {
-    res.status(500).json({ ok: false, error: String(err) });
+    console.error('[audit-webhooks] Unexpected error:', err);
+    res.status(500).json({ ok: false, error: String(err), stack: err.stack });
   }
 });
 
@@ -3030,22 +3210,37 @@ app.post("/api/chat", requireApiKey, async (req, res) => {
       }
     }
     
-    // Auto-inject webhook URL for cron job requests
+    // Auto-inject webhook instructions for cron job requests
     let finalMessage = message;
     const isCronRequest = detectCronRequest(message);
     
     if (isCronRequest) {
       const webhookUrl = getAgentWebhookUrl(req);
-      console.log('[api/chat] Detected cron request, injecting webhook URL:', webhookUrl);
+      console.log('[api/chat] Detected cron request, injecting webhook instructions:', webhookUrl);
       
-      // Append webhook instructions if not already mentioned
-      if (!message.toLowerCase().includes('webhook')) {
+      // Check if webhook instructions are already in the message
+      const hasWebhookInstructions = message.includes(webhookUrl) || 
+                                     message.includes('POST') && message.includes('webhook');
+      
+      if (!hasWebhookInstructions) {
+        // Inject instructions for agent to POST full results themselves
+        // This avoids OpenClaw's webhook delivery which only sends summaries
         finalMessage = `${message}
 
-IMPORTANT: Configure this cron job with webhook delivery to ${webhookUrl} so completion notifications are sent to the launcher UI.`;
-        console.log('[api/chat] Injected webhook instructions');
+CRITICAL: After completing your work, POST the FULL result to this webhook URL: ${webhookUrl}
+
+Use curl, fetch, or any HTTP tool you have available. The payload should be JSON:
+{
+  "jobName": "your job name",
+  "status": "success",
+  "content": "your complete response here",
+  "timestamp": "ISO timestamp"
+}
+
+Set the cron job's delivery mode to "none" since you're posting the result yourself. This ensures the launcher UI receives your complete response, not just a summary.`;
+        console.log('[api/chat] Injected webhook POST instructions');
       } else {
-        console.log('[api/chat] Webhook already mentioned in message, skipping injection');
+        console.log('[api/chat] Webhook instructions already present, skipping injection');
       }
     }
     
@@ -3065,15 +3260,68 @@ IMPORTANT: Configure this cron job with webhook delivery to ${webhookUrl} so com
         text: finalMessage
       });
       
+      // Check if the response indicates a configuration/ACP runtime error
+      const isConfigError = response && (
+        response.toLowerCase().includes('acp runtime') ||
+        response.toLowerCase().includes('configuration issue') ||
+        response.toLowerCase().includes('unable to') && (
+          response.toLowerCase().includes('trade') ||
+          response.toLowerCase().includes('post') ||
+          response.toLowerCase().includes('send')
+        )
+      );
+      
+      if (isConfigError) {
+        // Agent returned a configuration error - check which skills need setup
+        console.log('[api/chat] Agent returned configuration error, checking skill requirements...');
+        
+        const mentionedSkills = detectMentionedSkills(message);
+        const missingRequirements = [];
+        
+        for (const skillSlug of mentionedSkills) {
+          const requirementCheck = checkSkillRequirements(skillSlug);
+          if (requirementCheck) {
+            missingRequirements.push(requirementCheck);
+          }
+        }
+        
+        if (missingRequirements.length > 0) {
+          console.log(`[api/chat] Configuration needed for skills: ${mentionedSkills.join(', ')}`);
+          
+          // Combine all setup instructions
+          const allInstructions = missingRequirements
+            .map(req => req.setupInstructions)
+            .join('\n---\n\n');
+          
+          const allMissingVars = [...new Set(
+            missingRequirements.flatMap(req => req.missingVars)
+          )];
+          
+          return res.status(400).json({
+            ok: false,
+            error: 'Skill requirements not configured',
+            skills: mentionedSkills,
+            missingRequirements,
+            missingVars: allMissingVars,
+            setupInstructions: allInstructions,
+            helpUrl: 'https://github.com/buildonlabs-org/openclaw-agent#environment-variables',
+            originalResponse: response
+          });
+        }
+      }
+      
       // VERIFICATION STEP: Check if any cron jobs were created/modified without webhooks
       // This catches cases where pattern detection missed or agent created cron differently
       const cronJobsFixed = await verifyCronWebhooksAfterChat(req);
+      
+      // Clean up webhook URL details from response for cleaner user experience
+      const cleanedResponse = cleanupCronResponse(response);
       
       res.json({
         ok: true,
         agentId,
         sessionKey: finalSessionKey,
-        response,
+        response: cleanedResponse,
         timestamp: new Date().toISOString(),
         cronDetected: isCronRequest,
         cronJobsFixed // Number of cron jobs that were automatically fixed
@@ -3099,82 +3347,474 @@ IMPORTANT: Configure this cron job with webhook delivery to ${webhookUrl} so com
 });
 
 /**
- * Verify all cron jobs have webhook delivery configured
- * Automatically fixes any that are missing it
+ * Verify all cron jobs use delivery mode "none" (agent posts results themselves)
+ * Automatically fixes any using the old webhook delivery mode
  */
 async function verifyCronWebhooksAfterChat(req) {
   try {
     // List all cron jobs
     const result = await runCmd(OPENCLAW_CLI, ["cron", "list", "--json"]);
     if (result.code !== 0) {
-      console.warn('[verify-webhooks] Failed to list cron jobs:', result.error);
+      console.warn('[verify-delivery] Failed to list cron jobs:', result.error);
       return 0;
     }
     
-    const webhookUrl = getAgentWebhookUrl(req);
-    const jobs = JSON.parse(result.output);
+    // Parse and normalize the output
+    let jobs = [];
+    try {
+      const parsed = JSON.parse(result.output);
+      if (Array.isArray(parsed)) {
+        jobs = parsed;
+      } else if (parsed && typeof parsed === 'object') {
+        jobs = parsed.jobs || parsed.items || parsed.data || [parsed];
+      }
+    } catch (parseErr) {
+      console.error('[verify-delivery] Failed to parse JSON:', parseErr.message);
+      return 0;
+    }
+    
     let fixedCount = 0;
     
     for (const job of jobs) {
-      // Check if job has webhook delivery configured
-      const hasWebhook = job.delivery?.mode === 'webhook';
-      const correctUrl = job.delivery?.to === webhookUrl;
+      // Check if job is using old webhook delivery mode (only sends summaries)
+      const usesOldWebhookMode = job.delivery?.mode === 'webhook';
       
-      if (!hasWebhook || !correctUrl) {
-        console.log(`[verify-webhooks] Fixing cron job: ${job.name} (${job.id})`);
+      if (usesOldWebhookMode) {
+        console.log(`[verify-delivery] Fixing cron job to use delivery=none: ${job.name} (${job.id})`);
+        console.log(`[verify-delivery] Agent will POST full results themselves instead`);
         
-        // Update the job to add webhook delivery
+        // Update the job to use delivery mode "none"
+        // The agent will POST full results to the webhook themselves
         const updateResult = await runCmd(OPENCLAW_CLI, [
           "cron", "update", job.id,
-          "--webhook",
-          "--webhook-url", webhookUrl
+          "--delivery", "none"
         ]);
         
         if (updateResult.code === 0) {
-          console.log(`[verify-webhooks] ✅ Fixed: ${job.name}`);
+          console.log(`[verify-delivery] ✅ Fixed: ${job.name} - now uses delivery=none`);
           fixedCount++;
         } else {
-          console.error(`[verify-webhooks] ❌ Failed to fix: ${job.name}`, updateResult.error);
+          console.error(`[verify-delivery] ❌ Failed to fix: ${job.name}`, updateResult.error);
         }
       }
     }
     
     if (fixedCount > 0) {
-      console.log(`[verify-webhooks] Fixed ${fixedCount} cron job(s) with missing webhooks`);
+      console.log(`[verify-delivery] Fixed ${fixedCount} cron job(s) to use delivery=none`);
     }
     
     return fixedCount;
   } catch (error) {
-    console.error('[verify-webhooks] Error during verification:', error);
+    console.error('[verify-delivery] Error during verification:', error);
     return 0;
   }
 }
 
 /**
+ * Clean up agent response by removing webhook URL details
+ * Makes responses cleaner for end users
+ */
+function cleanupCronResponse(response) {
+  if (!response || typeof response !== 'string') {
+    return response;
+  }
+  
+  let cleaned = response;
+  
+  // Replace variations of "to [your/the] specified webhook URL:" (with colon) with "here."
+  cleaned = cleaned.replace(/to (your|the) specified webhook URL:\s*/gi, 'here.\n');
+  
+  // Also handle without colon
+  cleaned = cleaned.replace(/to (your|the) specified webhook URL/gi, 'here');
+  cleaned = cleaned.replace(/to the webhook URL/gi, 'here');
+  cleaned = cleaned.replace(/to webhook URL/gi, 'here');
+  
+  // Remove entire lines or sections mentioning webhook URL with actual URL
+  // This catches "Webhook URL: https://..." on its own line
+  cleaned = cleaned.replace(/^Webhook URL:.*$/gim, '');
+  cleaned = cleaned.replace(/^- Webhook URL:.*$/gim, '');
+  cleaned = cleaned.replace(/^\*\*Webhook URL\*\*:.*$/gim, '');
+  
+  // Remove webhook URL if it appears inline with https://
+  cleaned = cleaned.replace(/Webhook URL:\s*https?:\/\/[^\s\n]+/gi, '');
+  cleaned = cleaned.replace(/webhook URL:\s*https?:\/\/[^\s\n]+/gi, '');
+  
+  // Clean up any extra blank lines that might have been created
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
+  
+  // Trim any trailing whitespace
+  cleaned = cleaned.trim();
+  
+  return cleaned;
+}
+
+/**
  * Detect if a message is requesting to create/configure a cron job
+ * Supports English and basic patterns in other major languages
  */
 function detectCronRequest(message) {
   const lowerMessage = message.toLowerCase();
   
   // Patterns that indicate cron job creation/configuration
   const cronPatterns = [
-    /\bcron\s+job\b/,
-    /\bcron\s+add\b/,
-    /\bcreate.*cron/,
-    /\bschedule.*task/,
-    /\bschedule.*job/,
-    /\brecurring.*task/,
-    /\bautomated.*task/,
-    /\bset.*reminder/,
-    /\bruns?\s+every\b/,
-    /\bevery\s+\d+\s+(minute|hour|day|week)/,
-    /\bdaily\s+(at|trigger|run)/,
-    /\bhourly\s+(trigger|run)/,
-    /\bweekly\s+(trigger|run)/,
-    /at\s+\d+\s*(am|pm)/,
+    // ========== ENGLISH PATTERNS ==========
+    
+    // Explicit cron mentions
+    /\bcron\s+job\b/i,
+    /\bcron\s+add\b/i,
+    /\bcreate.*cron/i,
+    /\bschedule.*task/i,
+    /\bschedule.*job/i,
+    /\brecurring.*task/i,
+    /\bautomated.*task/i,
+    /\bset.*reminder/i,
+    /\bruns?\s+every\b/i,
+    
+    // Time frequency patterns - "every X"
+    /\bevery\s+\d*\s*(second|minute|hour|day|week|month|year)/i,
+    /\bevery\s+(few|couple|other)\s+(seconds?|minutes?|hours?|days?)/i,
+    /\beach\s+\d*\s*(minute|hour|day|week|month)/i,
+    
+    // Action verbs + "every" - broad coverage
+    /\b(send|notify|alert|tell|inform|ping|message|email|text)\s+(me|us)?\s*.*\bevery\b/i,
+    /\b(check|monitor|watch|track|scan|poll|query|fetch|get|pull|retrieve)\s*.*\bevery\b/i,
+    /\b(update|report|notify|alert|show|give|provide|share)\s+(me|us)?\s*.*\bevery\b/i,
+    
+    // "Keep me" patterns
+    /\bkeep\s+(me|us)\s+(updated|informed|notified|posted|in\s+the\s+loop)/i,
+    /\bkeep\s+(track|tabs|an\s+eye)\s+(of|on)/i,
+    
+    // "Let me know" patterns  
+    /\blet\s+(me|us)\s+know.*\b(every|when|if)/i,
+    /\binform\s+(me|us).*\b(every|regularly|periodically)/i,
+    
+    // Monitoring/watching language
+    /\bmonitor\s+(this|that|the|it|\w+)\s+(for\s+me|regularly|continuously)?/i,
+    /\bwatch\s+(for|out\s+for).*\b(changes?|updates?)/i,
+    /\bstay\s+(on\s+top\s+of|informed|updated)/i,
+    /\bfollow\s+.*\b(regularly|closely)/i,
+    /\bobserve\s+.*\b(continuously|regularly)/i,
+    
+    // "I want/need" patterns with frequency
+    /\bi\s+(want|need|would\s+like).*\bevery\b/i,
+    /\bi\s+(want|need|would\s+like).*\b(daily|hourly|weekly|regularly)/i,
+    
+    // Update/notification requests
+    /\b(get|receive|have)\s+(updates?|notifications?|alerts?).*\b(every|regular|periodic)/i,
+    /\bnotify.*\b(every|when|if).*\b(minute|hour|day|changes?)/i,
+    
+    // Time-based triggers
+    /\bdaily\s+(at|by|trigger|run|send|notify|check|update)/i,
+    /\bhourly\s+(trigger|run|send|notify|check|update)/i,
+    /\bweekly\s+(trigger|run|send|notify|check|update)/i,
+    /\bmonthly\s+(trigger|run|send|notify|check|update)/i,
+    /\bat\s+\d+\s*(am|pm|:\d+)/i,
+    /\bevery\s+(morning|evening|night|noon)/i,
+    
+    // Frequency adverbs
+    /\b(regularly|periodically|continuously|constantly|repeatedly|routinely)\s+(check|send|notify|update|monitor)/i,
+    /\b(check|send|notify|update|monitor).*\b(regularly|periodically|continuously|constantly|repeatedly)/i,
+    
+    // Interval patterns
+    /\bat\s+\d+\s+(minute|hour|day)\s+intervals?/i,
+    /\bon\s+an?\s+(hourly|daily|weekly|regular|periodic)\s+basis/i,
+    
+    // "Make sure" / "Ensure" patterns
+    /\b(make\s+sure|ensure|see\s+to\s+it)\s+.*\b(every|regularly|continuously)/i,
+    
+    // Automation indicators
+    /\bautomate.*\b(checking|monitoring|sending|notifying)/i,
+    /\bset\s+up.*\b(automatic|automated|recurring)/i,
+    
+    // Reminder patterns
+    /\bremind\s+(me|us).*\bevery\b/i,
+    /\breminder.*\b(every|daily|hourly|weekly)/i,
+    
+    // ========== SPANISH PATTERNS ==========
+    /\bcada\s+\d*\s*(segundo|minuto|hora|día|dia|semana|mes)/i,  // "cada X" = "every X"
+    /\b(enviar|notificar|avisar|informar).*\bcada\b/i,            // "send/notify every"
+    /\b(verificar|monitorear|revisar).*\bcada\b/i,                // "check/monitor every"
+    /\bdiariamente\b/i,                                            // "daily"
+    /\bcada\s+(mañana|tarde|noche)/i,                             // "every morning/afternoon/night"
+    /\bmantenerme\s+(actualizado|informado)/i,                    // "keep me updated/informed"
+    
+    // ========== FRENCH PATTERNS ==========
+    /\bchaque\s+\d*\s*(seconde|minute|heure|jour|semaine|mois)/i, // "chaque X" = "every X"
+    /\b(envoyer|notifier|informer).*\bchaque\b/i,                 // "send/notify every"
+    /\b(vérifier|surveiller|contrôler).*\bchaque\b/i,            // "check/monitor every"
+    /\btous\s+les\s+(jours|heures)/i,                             // "tous les jours" = "every day"
+    /\bquotidiennement\b/i,                                        // "daily"
+    /\bme\s+tenir\s+(au\s+courant|informé)/i,                     // "keep me informed"
+    
+    // ========== GERMAN PATTERNS ==========
+    /\bjede[ns]?\s+\d*\s*(Sekunde|Minute|Stunde|Tag|Woche|Monat)/i, // "jede X" = "every X"
+    /\b(senden|benachrichtigen|informieren).*\bjede/i,            // "send/notify every"
+    /\b(prüfen|überwachen|kontrollieren).*\bjede/i,              // "check/monitor every"
+    /\btäglich\b/i,                                               // "daily"
+    /\bstündlich\b/i,                                             // "hourly"
+    /\bmich\s+(auf\s+dem\s+Laufenden|informiert)\s+halten/i,    // "keep me informed"
+    
+    // ========== PORTUGUESE PATTERNS ==========
+    /\bcada\s+\d*\s*(segundo|minuto|hora|dia|semana|mês)/i,      // "cada X" = "every X"
+    /\b(enviar|notificar|avisar|informar).*\bcada\b/i,           // "send/notify every"
+    /\b(verificar|monitorar|verificar).*\bcada\b/i,              // "check/monitor every"
+    /\bdiariamente\b/i,                                           // "daily"
+    /\bme\s+manter\s+(atualizado|informado)/i,                   // "keep me updated"
+    
+    // ========== ITALIAN PATTERNS ==========
+    /\bogni\s+\d*\s*(secondo|minuto|ora|giorno|settimana|mese)/i, // "ogni X" = "every X"
+    /\b(inviare|notificare|avvisare).*\bogni\b/i,                // "send/notify every"
+    /\b(verificare|monitorare|controllare).*\bogni\b/i,          // "check/monitor every"
+    /\bquotidianamente\b/i,                                       // "daily"
+    /\btenermi\s+(aggiornato|informato)/i,                        // "keep me updated"
+    
+    // ========== CHINESE PATTERNS ==========
+    /每\s*\d*\s*(秒|分钟|小时|天|周|月)/,                          // "měi X" = "every X"
+    /定时|定期/,                                                    // "scheduled/regular"
+    /每天|每日/,                                                    // "every day/daily"
   ];
   
   return cronPatterns.some(pattern => pattern.test(lowerMessage));
+}
+
+/**
+ * Known skill requirements - maps skill slugs to required environment variables
+ * This is a curated list of common skills with known requirements
+ */
+const KNOWN_SKILL_REQUIREMENTS = {
+  'polymarket-odds': {
+    envVars: ['POLYMARKET_API_KEY', 'POLYMARKET_PRIVATE_KEY'],
+    anyOf: true, // Only one is required
+    setupInstructions: [
+      '⚠️ **Polymarket Skill Requires API Credentials**',
+      '',
+      'To use Polymarket skill, add ONE of these API keys:',
+      '- `POLYMARKET_API_KEY` - Get from polymarket.com/settings',
+      '- `POLYMARKET_PRIVATE_KEY` - Your Polymarket wallet private key',
+      '',
+      '**Steps:**',
+      '1. Go to Settings',
+      '2. Add the API key',
+      '3. Save changes',
+      ''
+    ]
+  },
+  'hyperliquid-cli': {
+    envVars: ['HYPERLIQUID_API_KEY', 'HYPERLIQUID_PRIVATE_KEY', 'AGENT_WALLET_PRIVATE_KEY'],
+    anyOf: true,
+    setupInstructions: [
+      '⚠️ **Hyperliquid Skill Requires Credentials**',
+      '',
+      'To use Hyperliquid skill, add ONE of these API keys:',
+      '- `HYPERLIQUID_API_KEY` - Get from hyperliquid.xyz/settings',
+      '- `HYPERLIQUID_PRIVATE_KEY` - Your Hyperliquid wallet private key',
+      '- `AGENT_WALLET_PRIVATE_KEY` - Use agent\'s own wallet (fund it first)',
+      '',
+      '**Steps:**',
+      '1. Go to Settings',
+      '2. Add the API key',
+      '3. Save changes',
+      ''
+    ]
+  },
+  'onchain': {
+    envVars: ['AGENT_WALLET_PRIVATE_KEY'],
+    setupInstructions: [
+      '⚠️ **Onchain Skill Requires Wallet**',
+      '',
+      'To use onchain operations, you need a funded crypto wallet.',
+      '',
+      '**Option 1: Use auto-generated wallet**',
+      '- Check /api/wallet for your agent\'s address',
+      '- Fund it with ETH/MATIC/USDC',
+      '',
+      '**Option 2: Provide your own wallet**',
+      '1. Go to Settings',
+      '2. Add: `AGENT_WALLET_PRIVATE_KEY=0x...`',
+      '3. Save changes',
+      ''
+    ]
+  },
+  'duckduckgo-search': {
+    envVars: [], // No API key required
+    setupInstructions: []
+  },
+  'twitter': {
+    envVars: ['TWITTER_API_KEY', 'TWITTER_API_SECRET', 'TWITTER_ACCESS_TOKEN', 'TWITTER_ACCESS_SECRET'],
+    setupInstructions: [
+      '⚠️ **Twitter Skill Requires API Credentials**',
+      '',
+      'To use Twitter skill, add these API keys in Settings:',
+      '- `TWITTER_API_KEY`',
+      '- `TWITTER_API_SECRET`',
+      '- `TWITTER_ACCESS_TOKEN`',
+      '- `TWITTER_ACCESS_SECRET`',
+      '',
+      '**Get credentials from:** developer.twitter.com',
+      ''
+    ]
+  },
+  'telegram': {
+    envVars: ['TELEGRAM_BOT_TOKEN'],
+    setupInstructions: [
+      '⚠️ **Telegram Skill Requires Bot Token**',
+      '',
+      'To use Telegram skill, add this API key in Settings:',
+      '- `TELEGRAM_BOT_TOKEN` - Get from @BotFather on Telegram',
+      '',
+      '**Steps:**',
+      '1. Message @BotFather on Telegram',
+      '2. Create a new bot',
+      '3. Copy the token',
+      '4. Go to Settings and add the API key',
+      ''
+    ]
+  },
+  'discord': {
+    envVars: ['DISCORD_BOT_TOKEN'],
+    setupInstructions: [
+      '⚠️ **Discord Skill Requires Bot Token**',
+      '',
+      'To use Discord skill, add this API key in Settings:',
+      '- `DISCORD_BOT_TOKEN` - Get from discord.com/developers',
+      '',
+      '**Steps:**',
+      '1. Go to discord.com/developers/applications',
+      '2. Create application → Bot',
+      '3. Copy the token',
+      '4. Go to Settings and add the API key',
+      ''
+    ]
+  },
+  'gmail': {
+    envVars: ['GMAIL_CLIENT_ID', 'GMAIL_CLIENT_SECRET', 'GMAIL_REFRESH_TOKEN'],
+    setupInstructions: [
+      '⚠️ **Gmail Skill Requires OAuth Credentials**',
+      '',
+      'To use Gmail skill, add these API keys in Settings:',
+      '- `GMAIL_CLIENT_ID`',
+      '- `GMAIL_CLIENT_SECRET`',
+      '- `GMAIL_REFRESH_TOKEN`',
+      '',
+      '**Get credentials from:** console.cloud.google.com',
+      ''
+    ]
+  },
+  'github': {
+    envVars: ['GITHUB_TOKEN', 'GITHUB_PERSONAL_ACCESS_TOKEN'],
+    anyOf: true,
+    setupInstructions: [
+      '⚠️ **GitHub Skill Requires Access Token**',
+      '',
+      'To use GitHub skill, add this API key in Settings:',
+      '- `GITHUB_TOKEN` or `GITHUB_PERSONAL_ACCESS_TOKEN`',
+      '',
+      '**Get token from:** github.com/settings/tokens',
+      ''
+    ]
+  }
+};
+
+/**
+ * Detect which skill the user is trying to use based on message content
+ * Returns array of skill slugs that might be mentioned
+ */
+function detectMentionedSkills(message) {
+  const lowerMessage = message.toLowerCase();
+  const mentionedSkills = [];
+  
+  // Check for explicit skill mentions
+  for (const [slug, requirements] of Object.entries(KNOWN_SKILL_REQUIREMENTS)) {
+    // Convert hyphe-separated to searchable patterns
+    const searchTerms = slug.split('-');
+    
+    // Check if message mentions the skill
+    if (searchTerms.some(term => lowerMessage.includes(term))) {
+      mentionedSkills.push(slug);
+    }
+  }
+  
+  // Fuzzy detection for common use cases
+  if (lowerMessage.match(/\b(trade|trading|market|bet)\b/) && lowerMessage.includes('polymarket')) {
+    if (!mentionedSkills.includes('polymarket-odds')) mentionedSkills.push('polymarket-odds');
+  }
+  
+  if (lowerMessage.match(/\b(trade|trading|perpetual|futures)\b/) && lowerMessage.includes('hyperliquid')) {
+    if (!mentionedSkills.includes('hyperliquid-cli')) mentionedSkills.push('hyperliquid-cli');
+  }
+  
+  if (lowerMessage.match(/\b(send|transfer|swap|on-chain|onchain|blockchain)\b/)) {
+    if (!mentionedSkills.includes('onchain')) mentionedSkills.push('onchain');
+  }
+  
+  if (lowerMessage.match(/\b(tweet|twitter|post.*twitter)\b/)) {
+    if (!mentionedSkills.includes('twitter')) mentionedSkills.push('twitter');
+  }
+  
+  if (lowerMessage.match(/\b(telegram|tg)\b/)) {
+    if (!mentionedSkills.includes('telegram')) mentionedSkills.push('telegram');
+  }
+  
+  if (lowerMessage.match(/\b(discord)\b/)) {
+    if (!mentionedSkills.includes('discord')) mentionedSkills.push('discord');
+  }
+  
+  if (lowerMessage.match(/\b(email|gmail|send.*mail)\b/)) {
+    if (!mentionedSkills.includes('gmail')) mentionedSkills.push('gmail');
+  }
+  
+  if (lowerMessage.match(/\b(github|repository|repo|pr|pull request)\b/)) {
+    if (!mentionedSkills.includes('github')) mentionedSkills.push('github');
+  }
+  
+  return mentionedSkills;
+}
+
+/**
+ * Check if required environment variables are set for a skill
+ * Returns null if all requirements met, or error object if missing
+ */
+function checkSkillRequirements(skillSlug) {
+  const requirements = KNOWN_SKILL_REQUIREMENTS[skillSlug];
+  
+  if (!requirements || requirements.envVars.length === 0) {
+    return null; // No requirements or skill not tracked
+  }
+  
+  const { envVars, anyOf = false, setupInstructions } = requirements;
+  const missingVars = [];
+  const presentVars = [];
+  
+  // Check which variables are set
+  for (const envVar of envVars) {
+    if (process.env[envVar]) {
+      presentVars.push(envVar);
+    } else {
+      missingVars.push(envVar);
+    }
+  }
+  
+  // Determine if requirements are met
+  const requirementsMet = anyOf 
+    ? presentVars.length > 0  // At least one variable is set
+    : missingVars.length === 0; // All variables are set
+  
+  if (requirementsMet) {
+    return null; // All good!
+  }
+  
+  // Build error response
+  const varList = anyOf 
+    ? `Any of: ${envVars.join(', ')}`
+    : envVars.join(', ');
+  
+  return {
+    skill: skillSlug,
+    requiredVars: envVars, 
+    missingVars: anyOf ? envVars : missingVars,
+    anyOf,
+    setupInstructions: setupInstructions.join('\n')
+  };
 }
 
 /**
@@ -3191,7 +3831,7 @@ function getAgentWebhookUrl(req) {
 }
 
 /**
- * Start periodic audit to ensure all cron jobs have webhook delivery
+ * Start periodic audit to ensure all cron jobs use delivery=none
  * Runs every 5 minutes
  */
 let periodicAuditInterval = null;
@@ -3204,7 +3844,7 @@ function startPeriodicCronWebhookAudit() {
   
   const AUDIT_INTERVAL = 5 * 60 * 1000; // 5 minutes
   
-  console.log('[periodic-audit] Starting cron webhook audit (every 5 minutes)');
+  console.log('[periodic-audit] Starting cron delivery mode audit (every 5 minutes)');
   
   // Run immediately on start
   performCronWebhookAudit();
@@ -3217,6 +3857,7 @@ function startPeriodicCronWebhookAudit() {
 
 /**
  * Perform the actual audit - check and fix cron jobs
+ * Ensures all jobs use delivery=none so agents POST full results themselves
  */
 async function performCronWebhookAudit() {
   try {
@@ -3225,7 +3866,7 @@ async function performCronWebhookAudit() {
       return;
     }
     
-    console.log('[periodic-audit] Checking cron jobs for webhook delivery...');
+    console.log('[periodic-audit] Checking cron jobs for delivery mode...');
     
     const result = await runCmd(OPENCLAW_CLI, ["cron", "list", "--json"]);
     if (result.code !== 0) {
@@ -3233,25 +3874,36 @@ async function performCronWebhookAudit() {
       return;
     }
     
-    const webhookUrl = getAgentWebhookUrl(null);
-    const jobs = JSON.parse(result.output);
+    // Parse and normalize the output
+    let jobs = [];
+    try {
+      const parsed = JSON.parse(result.output);
+      if (Array.isArray(parsed)) {
+        jobs = parsed;
+      } else if (parsed && typeof parsed === 'object') {
+        jobs = parsed.jobs || parsed.items || parsed.data || [parsed];
+      }
+    } catch (parseErr) {
+      console.error('[periodic-audit] Failed to parse JSON:', parseErr.message);
+      return;
+    }
+    
     let fixedCount = 0;
     
     for (const job of jobs) {
-      const hasWebhook = job.delivery?.mode === 'webhook';
-      const correctUrl = job.delivery?.to === webhookUrl;
+      // Check if job is using old webhook delivery mode (only sends summaries)
+      const usesOldWebhookMode = job.delivery?.mode === 'webhook';
       
-      if (!hasWebhook || !correctUrl) {
-        console.log(`[periodic-audit] Fixing cron job: ${job.name} (${job.id})`);
+      if (usesOldWebhookMode) {
+        console.log(`[periodic-audit] Fixing cron job to use delivery=none: ${job.name} (${job.id})`);
         
         const updateResult = await runCmd(OPENCLAW_CLI, [
           "cron", "update", job.id,
-          "--webhook",
-          "--webhook-url", webhookUrl
+          "--delivery", "none"
         ]);
         
         if (updateResult.code === 0) {
-          console.log(`[periodic-audit] ✅ Fixed: ${job.name}`);
+          console.log(`[periodic-audit] ✅ Fixed: ${job.name} - now uses delivery=none`);
           fixedCount++;
         } else {
           console.error(`[periodic-audit] ❌ Failed to fix: ${job.name}`);
@@ -3260,9 +3912,9 @@ async function performCronWebhookAudit() {
     }
     
     if (fixedCount > 0) {
-      console.log(`[periodic-audit] Fixed ${fixedCount} cron job(s) with missing webhooks`);
+      console.log(`[periodic-audit] Fixed ${fixedCount} cron job(s) to use delivery=none`);
     } else if (jobs.length > 0) {
-      console.log(`[periodic-audit] All ${jobs.length} cron job(s) have webhook delivery ✓`);
+      console.log(`[periodic-audit] All ${jobs.length} cron job(s) using correct delivery mode ✓`);
     }
   } catch (error) {
     console.error('[periodic-audit] Error during audit:', error.message);
