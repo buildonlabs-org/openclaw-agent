@@ -4261,6 +4261,80 @@ const server = app.listen(PORT, () => {
     })().catch((err) => {
       console.error(`[wrapper] failed to start gateway at boot: ${err.message}`);
     });
+  } else if (DEFAULT_OPENAI_KEY) {
+    // Auto-onboard if not configured but DEFAULT_OPENAI_KEY is available
+    (async () => {
+      try {
+        console.log("[wrapper] AUTO-ONBOARDING: Not configured but DEFAULT_OPENAI_KEY is set");
+        console.log("[wrapper] AUTO-ONBOARDING: Running automatic setup with default credentials...");
+        
+        fs.mkdirSync(STATE_DIR, { recursive: true });
+        fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
+
+        const onboardArgs = buildOnboardArgs({});
+        console.log("[wrapper] AUTO-ONBOARDING: Starting onboarding with default OpenAI credentials...");
+        const onboard = await runCmd(OPENCLAW_CLI, onboardArgs);
+
+        const ok = onboard.code === 0 && isConfigured();
+        console.log(`[wrapper] AUTO-ONBOARDING: Onboarding exit=${onboard.code} configured=${isConfigured()}`);
+
+        if (ok) {
+          console.log("[wrapper] AUTO-ONBOARDING: Configuring gateway settings...");
+
+          // Set gateway token in config
+          await runCmd(OPENCLAW_CLI, [
+            "config", "set", "gateway.auth.token", OPENCLAW_GATEWAY_TOKEN,
+          ]);
+
+          // Set allowInsecureAuth
+          await runCmd(OPENCLAW_CLI, [
+            "config", "set", "gateway.controlUi.allowInsecureAuth", "true",
+          ]);
+
+          // Set trusted proxies
+          await runCmd(OPENCLAW_CLI, [
+            "config", "set", "--json", "gateway.trustedProxies", '["127.0.0.1"]',
+          ]);
+
+          // Configure allowed origins
+          const allowedOrigins = ["http://localhost:8080", "http://127.0.0.1:8080"];
+          if (process.env.RAILWAY_PUBLIC_DOMAIN) {
+            allowedOrigins.push(`https://${process.env.RAILWAY_PUBLIC_DOMAIN}`);
+          }
+          if (process.env.RAILWAY_STATIC_URL) {
+            allowedOrigins.push(process.env.RAILWAY_STATIC_URL);
+          }
+          allowedOrigins.push("https://*.railway.app");
+          
+          await runCmd(OPENCLAW_CLI, [
+            "config", "set", "--json", "gateway.controlUi.allowedOrigins", 
+            JSON.stringify(allowedOrigins),
+          ]);
+
+          // Set model
+          console.log(`[wrapper] AUTO-ONBOARDING: Setting model to ${DEFAULT_MODEL}...`);
+          await runCmd(OPENCLAW_CLI, ["models", "set", DEFAULT_MODEL]);
+
+          console.log("[wrapper] AUTO-ONBOARDING: Starting gateway...");
+          await ensureGatewayRunning();
+          
+          // Start periodic cron webhook audit
+          startPeriodicCronWebhookAudit();
+          
+          console.log("[wrapper] AUTO-ONBOARDING: ✅ Agent fully configured and ready!");
+        } else {
+          console.error("[wrapper] AUTO-ONBOARDING: ❌ Failed to complete onboarding");
+          console.error(onboard.output);
+        }
+      } catch (err) {
+        console.error(`[wrapper] AUTO-ONBOARDING: ❌ Error: ${err.message}`);
+      }
+    })().catch((err) => {
+      console.error(`[wrapper] AUTO-ONBOARDING failed: ${err.message}`);
+    });
+  } else {
+    console.log("[wrapper] Not configured and no DEFAULT_OPENAI_API_KEY set");
+    console.log("[wrapper] Visit /setup or set DEFAULT_OPENAI_API_KEY in Railway to auto-configure");
   }
 });
 

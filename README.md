@@ -1,19 +1,38 @@
 # OpenClaw Gateway - Railway Deployment
 
 Deploy an OpenClaw AI gateway to Railway with:
+- � **Auto-Configuration** - Set `DEFAULT_OPENAI_API_KEY` env var and deploy - agent auto-onboards on startup!
 - 🔐 **Built-in Crypto Wallet** - Auto-generated EVM wallet, agent knows its address
 - 📦 **Pre-Cached Skills** - Instant install, no ClawHub rate limits
-- 🧙 **Web Setup Wizard** - Configure through browser at `/setup`
+- 🧙 **Web Setup Wizard** - Configure through browser at `/setup` (optional if auto-config is enabled)
 - 🔌 **Headless REST API** - Full programmatic control ([docs](API.md))
 - 🤖 **Multi-Provider Support** - OpenAI, Anthropic, Google Gemini, OpenRouter
-- ⚙️ **Auto-Configuration** - Gateway settings applied automatically
-- 🎯 **Default OpenAI Setup** - Pre-configured with OpenAI API key and gpt-4o-mini model
+- ⚙️ **Default OpenAI Setup** - Pre-configured with OpenAI API key and gpt-4o-mini model when `DEFAULT_OPENAI_API_KEY` is set
 - 💬 **Channel Integration** - Connect Telegram, Discord bots
 - 🔐 **Device Management** - Approve pairing requests via web UI or API
 - 🎯 **Skill Management** - Install, update, and manage ClawHub skills via API
 - 💬 **Chat API** - Send messages to your agent and receive responses
 - 💾 **Persistent State** - Configuration survives redeploys with Railway volumes
 - 🔔 **Webhook Notifications** - Real-time cron job and event updates to launcher UI
+
+## 🚀 Quick Start (Zero Configuration)
+
+Deploy a fully configured agent in seconds:
+
+1. **Fork this repo** or deploy to Railway
+2. **Add ONE environment variable** in Railway:
+   ```
+   DEFAULT_OPENAI_API_KEY=sk-proj-YOUR-KEY-HERE
+   ```
+3. **Deploy!** The agent will:
+   - ✅ Auto-onboard with OpenAI credentials
+   - ✅ Configure gateway settings
+   - ✅ Set model to `gpt-4o-mini`
+   - ✅ Start accepting requests immediately
+
+**That's it!** No setup wizard, no manual configuration, no API calls needed.
+
+See [OPENAI-AUTO-CONFIG.md](OPENAI-AUTO-CONFIG.md) for details on auto-configuration.
 
 ## ✨ New Features
 
