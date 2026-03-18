@@ -3908,6 +3908,7 @@ const MAX_TELEGRAM_CHAT_ID_LENGTH = 19; // Telegram chat IDs fit in signed 64-bi
  * Supports patterns like:
  * - "telegram:123456789"
  * - "tg-123456789"
+ * - "tg_123456789"
  * - "session:telegram:123456789"
  */
 function extractTelegramChatIdFromString(value) {
@@ -3916,7 +3917,7 @@ function extractTelegramChatIdFromString(value) {
   const match = raw.match(/(?:telegram|tg)[:\-_](-?\d+)/i);
   if (match) {
     const candidate = match[1];
-    const digitsOnly = candidate.replace(/-/g, '');
+    const digitsOnly = candidate.replace(/^-/, '');
     if (digitsOnly.length > MAX_TELEGRAM_CHAT_ID_LENGTH) {
       return null;
     }
