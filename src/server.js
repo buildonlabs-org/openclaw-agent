@@ -2010,7 +2010,6 @@ app.post("/api/configure", requireApiKey, async (req, res) => {
       } else if (authChoice === 'openrouter-api-key') {
         providerPrefix = 'openrouter/';
       }
-      }
       
       // Only add prefix if model doesn't already have one
       const fullModelName = modelToSet.includes('/') ? modelToSet : `${providerPrefix}${modelToSet}`;
