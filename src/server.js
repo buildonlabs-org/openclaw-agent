@@ -3902,6 +3902,23 @@ function parseTelegramChatId(value) {
 }
 
 /**
+ * Extract a Telegram chat ID from a string containing a telegram/tg marker.
+ * Supports patterns like:
+ * - "telegram:123456789"
+ * - "tg-123456789"
+ * - "session:telegram:123456789"
+ */
+function extractTelegramChatIdFromString(value) {
+  if (!value) return null;
+  const raw = String(value);
+  const match = raw.match(/(?:telegram|tg)[:\-_]?(-?\d{4,})/i);
+  if (match) {
+    return parseTelegramChatId(match[1]);
+  }
+  return null;
+}
+
+/**
  * Attempt to infer a Telegram chat ID from a session key string.
  * Supports patterns like:
  * - "telegram:123456789"
@@ -3909,16 +3926,7 @@ function parseTelegramChatId(value) {
  * - "session:telegram:123456789"
  */
 function parseTelegramChatIdFromSessionKey(sessionKey) {
-  if (!sessionKey) return null;
-  const raw = String(sessionKey);
-
-  // Look for explicit telegram/tg markers with a numeric ID nearby
-  const match = raw.match(/(?:telegram|tg)[^0-9-]*(-?\d{4,})/i);
-  if (match) {
-    return parseTelegramChatId(match[1]);
-  }
-
-  return null;
+  return extractTelegramChatIdFromString(sessionKey);
 }
 
 /**
@@ -3928,14 +3936,7 @@ function parseTelegramChatIdFromSessionKey(sessionKey) {
  * - "session:tg-123456789"
  */
 function parseTelegramChatIdFromSessionTarget(sessionTarget) {
-  if (!sessionTarget) return null;
-  const raw = String(sessionTarget);
-  const match = raw.match(/(?:telegram|tg)[^0-9-]*(-?\d{4,})/i);
-  if (match) {
-    return parseTelegramChatId(match[1]);
-  }
-
-  return null;
+  return extractTelegramChatIdFromString(sessionTarget);
 }
 
 /**
