@@ -3901,7 +3901,6 @@ function parseTelegramChatId(value) {
   return /^-?\d+$/.test(trimmed) ? trimmed : null;
 }
 
-const MAX_TELEGRAM_CHAT_ID_LENGTH = 19; // Max digits for absolute value within int64 range
 const TELEGRAM_CHAT_ID_MIN = -(2n ** 63n);
 const TELEGRAM_CHAT_ID_MAX = (2n ** 63n) - 1n;
 
@@ -3916,14 +3915,9 @@ const TELEGRAM_CHAT_ID_MAX = (2n ** 63n) - 1n;
 function extractTelegramChatIdFromString(value) {
   if (!value) return null;
   const raw = String(value);
-  const match = raw.match(/(?:telegram|tg)[:\-_](-?\d+)/i);
+  const match = raw.match(/(?:telegram|tg)[:\-_](-?\d+)\b/i);
   if (match) {
     const candidate = match[1];
-    // Fast sanity check on absolute digit length; actual int64 bounds enforced below
-    const digitsOnly = candidate.replace(/^-/, '');
-    if (digitsOnly.length > MAX_TELEGRAM_CHAT_ID_LENGTH) {
-      return null;
-    }
     try {
       const numericValue = BigInt(candidate);
       if (numericValue < TELEGRAM_CHAT_ID_MIN || numericValue > TELEGRAM_CHAT_ID_MAX) {
