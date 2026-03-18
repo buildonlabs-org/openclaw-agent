@@ -3911,9 +3911,14 @@ function parseTelegramChatId(value) {
 function extractTelegramChatIdFromString(value) {
   if (!value) return null;
   const raw = String(value);
-  const match = raw.match(/(?:telegram|tg)[:\-_](-?\d{1,})/i);
+  const match = raw.match(/(?:telegram|tg)[:\-_](-?\d+)/i);
   if (match) {
-    return parseTelegramChatId(match[1]);
+    const candidate = match[1];
+    const digitsOnly = candidate.replace('-', '');
+    if (digitsOnly.length > 19) {
+      return null;
+    }
+    return parseTelegramChatId(candidate);
   }
   return null;
 }
