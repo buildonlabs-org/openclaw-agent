@@ -3225,7 +3225,7 @@ app.post("/api/chat", requireApiKey, async (req, res) => {
     }
 
     // If chat ID not provided, attempt to infer from sessionKey patterns
-    const inferredTelegramChatId = safeTelegramChatId || parseTelegramChatIdFromSessionKey(sessionKey);
+    const inferredTelegramChatId = safeTelegramChatId || extractTelegramChatIdFromString(sessionKey);
     if (!safeTelegramChatId && inferredTelegramChatId) {
       console.log('[api/chat] Inferred telegramChatId from sessionKey:', inferredTelegramChatId);
     }
@@ -3911,32 +3911,11 @@ function parseTelegramChatId(value) {
 function extractTelegramChatIdFromString(value) {
   if (!value) return null;
   const raw = String(value);
-  const match = raw.match(/(?:telegram|tg)[:\-_]?(-?\d{4,})/i);
+  const match = raw.match(/(?:telegram|tg)[:\-_](-?\d{1,})/i);
   if (match) {
     return parseTelegramChatId(match[1]);
   }
   return null;
-}
-
-/**
- * Attempt to infer a Telegram chat ID from a session key string.
- * Supports patterns like:
- * - "telegram:123456789"
- * - "tg-123456789"
- * - "session:telegram:123456789"
- */
-function parseTelegramChatIdFromSessionKey(sessionKey) {
-  return extractTelegramChatIdFromString(sessionKey);
-}
-
-/**
- * Attempt to infer a Telegram chat ID from a cron session target.
- * Supports patterns like:
- * - "session:telegram:123456789"
- * - "session:tg-123456789"
- */
-function parseTelegramChatIdFromSessionTarget(sessionTarget) {
-  return extractTelegramChatIdFromString(sessionTarget);
 }
 
 /**
@@ -3965,7 +3944,7 @@ function resolveTelegramChatId(payload, job, run) {
   ];
 
   for (const candidate of sessionCandidates) {
-    const parsed = parseTelegramChatIdFromSessionTarget(candidate);
+    const parsed = extractTelegramChatIdFromString(candidate);
     if (parsed) return parsed;
   }
 
