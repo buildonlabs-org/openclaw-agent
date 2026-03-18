@@ -12,6 +12,13 @@ export OPENCLAW_STATE_DIR="${OPENCLAW_STATE_DIR:-/data/.openclaw}"
 export OPENCLAW_CLI="${OPENCLAW_CLI:-openclaw}"
 export CLAWHUB_CLI="${CLAWHUB_CLI:-clawhub}"
 
+# Auto-configure OpenAI defaults for all agents
+# Set DEFAULT_OPENAI_API_KEY in Railway environment variables
+if [ -n "$DEFAULT_OPENAI_API_KEY" ]; then
+    export OPENAI_API_KEY="${OPENAI_API_KEY:-$DEFAULT_OPENAI_API_KEY}"
+fi
+export DEFAULT_MODEL="${DEFAULT_MODEL:-gpt-4o-mini}"
+
 echo "=============================================="
 echo "🚀 Starting OpenClaw Gateway Wrapper"
 echo "=============================================="
@@ -20,6 +27,7 @@ echo "Workspace: $OPENCLAW_WORKSPACE"
 echo "State Dir: $OPENCLAW_STATE_DIR"
 echo "CLI: $OPENCLAW_CLI"
 echo "ClawHub CLI: $CLAWHUB_CLI"
+echo "Default Model: $DEFAULT_MODEL"
 echo "=============================================="
 
 # Ensure directories exist

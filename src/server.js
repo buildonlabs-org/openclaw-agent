@@ -22,6 +22,22 @@ const STATE_DIR = process.env.OPENCLAW_STATE_DIR?.trim() || "/data/.openclaw";
 const WORKSPACE_DIR = process.env.OPENCLAW_WORKSPACE_DIR?.trim() || "/data/workspace";
 const SETUP_PASSWORD = process.env.SETUP_PASSWORD?.trim();
 
+// Auto-configure OpenAI defaults for all agents
+// Set DEFAULT_OPENAI_API_KEY in Railway environment variables
+const DEFAULT_OPENAI_KEY = process.env.DEFAULT_OPENAI_API_KEY?.trim();
+const DEFAULT_MODEL = process.env.DEFAULT_MODEL?.trim() || "gpt-4o-mini";
+
+// Set OpenAI API key in environment if not already set
+if (!process.env.OPENAI_API_KEY && DEFAULT_OPENAI_KEY) {
+  process.env.OPENAI_API_KEY = DEFAULT_OPENAI_KEY;
+  console.log("[autoconfigure] Set default OPENAI_API_KEY from DEFAULT_OPENAI_API_KEY env var");
+}
+if (DEFAULT_OPENAI_KEY) {
+  console.log("[autoconfigure] Default model: " + DEFAULT_MODEL);
+} else {
+  console.log("[autoconfigure] No DEFAULT_OPENAI_API_KEY set - OpenAI credentials must be provided during setup");
+}
+
 // Gateway token resolution
 function resolveGatewayToken() {
   const envToken = process.env.OPENCLAW_GATEWAY_TOKEN?.trim();
@@ -1159,19 +1175,23 @@ function buildOnboardArgs(payload) {
     payload.flow || "quickstart",
   ];
 
-  if (payload.authChoice) {
-    args.push("--auth-choice", payload.authChoice);
+  // Default to OpenAI if no auth choice specified
+  const authChoice = payload.authChoice || "openai-api-key";
+  args.push("--auth-choice", authChoice);
 
-    const secret = (payload.authSecret || "").trim();
-    const map = {
-      "openai-api-key": "--openai-api-key",
-      apiKey: "--anthropic-api-key",
-      "openrouter-api-key": "--openrouter-api-key",
-      "gemini-api-key": "--gemini-api-key",
-    };
-    const flag = map[payload.authChoice];
-    if (flag && secret) {
-      args.push(flag, secret);
+  const secret = (payload.authSecret || "").trim();
+  const map = {
+    "openai-api-key": "--openai-api-key",
+    apiKey: "--anthropic-api-key",
+    "openrouter-api-key": "--openrouter-api-key",
+    "gemini-api-key": "--gemini-api-key",
+  };
+  const flag = map[authChoice];
+  if (flag) {
+    // Use provided secret, or fallback to default OpenAI key if auth is openai
+    const secretValue = secret || (authChoice === "openai-api-key" ? DEFAULT_OPENAI_KEY : "");
+    if (secretValue) {
+      args.push(flag, secretValue);
     }
   }
 
@@ -1367,15 +1387,31 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {  // Extend ti
       );
       extra += `[config] gateway.controlUi.allowedOrigins exit=${originsResult.code}\n`;
 
-      // Set model if provided
-      if (payload.model?.trim()) {
-        extra += `[setup] Setting model to ${payload.model.trim()}...\n`;
-        const modelResult = await runCmd(
-          OPENCLAW_CLI,
-          ["models", "set", payload.model.trim()],
-        );
-        extra += `[models set] exit=${modelResult.code}\n${modelResult.output || ""}`;
+      // Set model (use provided model or default to gpt-4o-mini)
+      const modelToSet = payload.model?.trim() || DEFAULT_MODEL;
+      
+      // Add provider prefix based on authChoice (which defaults to openai-api-key in buildOnboardArgs)
+      const authChoice = payload.authChoice || "openai-api-key";
+      let providerPrefix = '';
+      if (authChoice === 'openai-api-key') {
+        providerPrefix = 'openai/';
+      } else if (authChoice === 'apiKey') {
+        providerPrefix = 'anthropic/';
+      } else if (authChoice === 'gemini-api-key') {
+        providerPrefix = 'google/';
+      } else if (authChoice === 'openrouter-api-key') {
+        providerPrefix = 'openrouter/';
       }
+      
+      // Only add prefix if model doesn't already have one
+      const fullModelName = modelToSet.includes('/') ? modelToSet : `${providerPrefix}${modelToSet}`;
+      
+      extra += `[setup] Setting model to ${fullModelName}...\n`;
+      const modelResult = await runCmd(
+        OPENCLAW_CLI,
+        ["models", "set", fullModelName],
+      );
+      extra += `[models set] exit=${modelResult.code}\n${modelResult.output || ""}`;
 
       // Configure channels if tokens provided
       async function configureChannel(name, cfgObj) {
@@ -1959,31 +1995,31 @@ app.post("/api/configure", requireApiKey, async (req, res) => {
       );
       extra += `[config] gateway.controlUi.allowedOrigins exit=${originsResult.code}\n`;
 
-      // Set model if provided
-      if (payload.model?.trim()) {
-        // Determine provider prefix based on authChoice
-        let providerPrefix = '';
-        if (payload.authChoice === 'openai-api-key') {
-          providerPrefix = 'openai/';
-        } else if (payload.authChoice === 'apiKey') {
-          providerPrefix = 'anthropic/';
-        } else if (payload.authChoice === 'gemini-api-key') {
-          providerPrefix = 'google/';
-        } else if (payload.authChoice === 'openrouter-api-key') {
-          providerPrefix = 'openrouter/';
-        }
-        
-        const modelName = payload.model.trim();
-        // Only add prefix if model doesn't already have one
-        const fullModelName = modelName.includes('/') ? modelName : `${providerPrefix}${modelName}`;
-        
-        extra += `[api/configure] Setting model to ${fullModelName}...\n`;
-        const modelResult = await runCmd(
-          OPENCLAW_CLI,
-          ["models", "set", fullModelName],
-        );
-        extra += `[models set] exit=${modelResult.code}\n${modelResult.output || ""}\n`;
+      // Set model (use provided model or default to gpt-4o-mini)
+      const modelToSet = payload.model?.trim() || DEFAULT_MODEL;
+      
+      // Determine provider prefix based on authChoice (defaults to openai-api-key like buildOnboardArgs)
+      const authChoice = payload.authChoice || "openai-api-key";
+      let providerPrefix = '';
+      if (authChoice === 'openai-api-key') {
+        providerPrefix = 'openai/';
+      } else if (authChoice === 'apiKey') {
+        providerPrefix = 'anthropic/';
+      } else if (authChoice === 'gemini-api-key') {
+        providerPrefix = 'google/';
+      } else if (authChoice === 'openrouter-api-key') {
+        providerPrefix = 'openrouter/';
       }
+      
+      // Only add prefix if model doesn't already have one
+      const fullModelName = modelToSet.includes('/') ? modelToSet : `${providerPrefix}${modelToSet}`;
+      
+      extra += `[api/configure] Setting model to ${fullModelName}...\n`;
+      const modelResult = await runCmd(
+        OPENCLAW_CLI,
+        ["models", "set", fullModelName],
+      );
+      extra += `[models set] exit=${modelResult.code}\n${modelResult.output || ""}\n`;
 
       // Configure channels if tokens provided
       async function configureChannel(name, cfgObj) {
@@ -4243,6 +4279,81 @@ const server = app.listen(PORT, () => {
     })().catch((err) => {
       console.error(`[wrapper] failed to start gateway at boot: ${err.message}`);
     });
+  } else if (DEFAULT_OPENAI_KEY) {
+    // Auto-onboard if not configured but DEFAULT_OPENAI_KEY is available
+    (async () => {
+      try {
+        console.log("[wrapper] AUTO-ONBOARDING: Not configured but DEFAULT_OPENAI_KEY is set");
+        console.log("[wrapper] AUTO-ONBOARDING: Running automatic setup with default credentials...");
+        
+        fs.mkdirSync(STATE_DIR, { recursive: true });
+        fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
+
+        const onboardArgs = buildOnboardArgs({});
+        console.log("[wrapper] AUTO-ONBOARDING: Starting onboarding with default OpenAI credentials...");
+        const onboard = await runCmd(OPENCLAW_CLI, onboardArgs);
+
+        const ok = onboard.code === 0 && isConfigured();
+        console.log(`[wrapper] AUTO-ONBOARDING: Onboarding exit=${onboard.code} configured=${isConfigured()}`);
+
+        if (ok) {
+          console.log("[wrapper] AUTO-ONBOARDING: Configuring gateway settings...");
+
+          // Set gateway token in config
+          await runCmd(OPENCLAW_CLI, [
+            "config", "set", "gateway.auth.token", OPENCLAW_GATEWAY_TOKEN,
+          ]);
+
+          // Set allowInsecureAuth
+          await runCmd(OPENCLAW_CLI, [
+            "config", "set", "gateway.controlUi.allowInsecureAuth", "true",
+          ]);
+
+          // Set trusted proxies
+          await runCmd(OPENCLAW_CLI, [
+            "config", "set", "--json", "gateway.trustedProxies", '["127.0.0.1"]',
+          ]);
+
+          // Configure allowed origins
+          const allowedOrigins = ["http://localhost:8080", "http://127.0.0.1:8080"];
+          if (process.env.RAILWAY_PUBLIC_DOMAIN) {
+            allowedOrigins.push(`https://${process.env.RAILWAY_PUBLIC_DOMAIN}`);
+          }
+          if (process.env.RAILWAY_STATIC_URL) {
+            allowedOrigins.push(process.env.RAILWAY_STATIC_URL);
+          }
+          allowedOrigins.push("https://*.railway.app");
+          
+          await runCmd(OPENCLAW_CLI, [
+            "config", "set", "--json", "gateway.controlUi.allowedOrigins", 
+            JSON.stringify(allowedOrigins),
+          ]);
+
+          // Set model with provider prefix (since we default to openai-api-key)
+          const fullModelName = DEFAULT_MODEL.includes('/') ? DEFAULT_MODEL : `openai/${DEFAULT_MODEL}`;
+          console.log(`[wrapper] AUTO-ONBOARDING: Setting model to ${fullModelName}...`);
+          await runCmd(OPENCLAW_CLI, ["models", "set", fullModelName]);
+
+          console.log("[wrapper] AUTO-ONBOARDING: Starting gateway...");
+          await ensureGatewayRunning();
+          
+          // Start periodic cron webhook audit
+          startPeriodicCronWebhookAudit();
+          
+          console.log("[wrapper] AUTO-ONBOARDING: ✅ Agent fully configured and ready!");
+        } else {
+          console.error("[wrapper] AUTO-ONBOARDING: ❌ Failed to complete onboarding");
+          console.error(onboard.output);
+        }
+      } catch (err) {
+        console.error(`[wrapper] AUTO-ONBOARDING: ❌ Error: ${err.message}`);
+      }
+    })().catch((err) => {
+      console.error(`[wrapper] AUTO-ONBOARDING failed: ${err.message}`);
+    });
+  } else {
+    console.log("[wrapper] Not configured and no DEFAULT_OPENAI_API_KEY set");
+    console.log("[wrapper] Visit /setup or set DEFAULT_OPENAI_API_KEY in Railway to auto-configure");
   }
 });
 
