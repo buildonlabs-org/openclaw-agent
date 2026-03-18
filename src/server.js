@@ -3898,7 +3898,18 @@ function getAgentWebhookUrl(req) {
 function parseTelegramChatId(value) {
   if (value == null) return null;
   const trimmed = String(value).trim();
-  return /^-?\d+$/.test(trimmed) ? trimmed : null;
+  if (!/^-?\d+$/.test(trimmed)) {
+    return null;
+  }
+  try {
+    const numericValue = BigInt(trimmed);
+    if (numericValue < TELEGRAM_CHAT_ID_MIN || numericValue > TELEGRAM_CHAT_ID_MAX) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+  return trimmed;
 }
 
 const TELEGRAM_CHAT_ID_MIN = -(2n ** 63n);
@@ -3915,17 +3926,9 @@ const TELEGRAM_CHAT_ID_MAX = (2n ** 63n) - 1n;
 function extractTelegramChatIdFromString(value) {
   if (!value) return null;
   const raw = String(value);
-  const match = raw.match(/(?:telegram|tg)[:\-_](-?\d+)\b/i);
+  const match = raw.match(/(?:telegram|tg)[:\-_](-?\d+)(?!\d)/i);
   if (match) {
     const candidate = match[1];
-    try {
-      const numericValue = BigInt(candidate);
-      if (numericValue < TELEGRAM_CHAT_ID_MIN || numericValue > TELEGRAM_CHAT_ID_MAX) {
-        return null;
-      }
-    } catch {
-      return null;
-    }
     return parseTelegramChatId(candidate);
   }
   return null;
