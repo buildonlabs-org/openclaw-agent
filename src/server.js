@@ -3225,7 +3225,10 @@ app.post("/api/chat", requireApiKey, async (req, res) => {
     }
 
     // If chat ID not provided, attempt to infer from sessionKey patterns
-    const inferredTelegramChatId = safeTelegramChatId || (sessionKey ? extractTelegramChatIdFromString(sessionKey) : null);
+    let inferredTelegramChatId = safeTelegramChatId;
+    if (!inferredTelegramChatId && sessionKey) {
+      inferredTelegramChatId = extractTelegramChatIdFromString(sessionKey);
+    }
     if (!safeTelegramChatId && inferredTelegramChatId) {
       console.log('[api/chat] Inferred telegramChatId from sessionKey:', inferredTelegramChatId);
     }
@@ -3926,7 +3929,7 @@ function parseTelegramChatId(value) {
 function extractTelegramChatIdFromString(value) {
   if (!value) return null;
   const raw = String(value);
-  const match = raw.match(/(?:telegram|tg)[:\-_](-?\d+)(?!\d)/i);
+  const match = raw.match(/(?:telegram|tg)[:\-_](-?\d{1,19})(?!\d)/i);
   if (match) {
     const candidate = match[1];
     return parseTelegramChatId(candidate);
