@@ -3901,11 +3901,13 @@ function parseTelegramChatId(value) {
   return /^-?\d+$/.test(trimmed) ? trimmed : null;
 }
 
-const MAX_TELEGRAM_CHAT_ID_LENGTH = 19; // Telegram chat IDs fit in signed 64-bit integers
+const MAX_TELEGRAM_CHAT_ID_LENGTH = 19; // Max digits for absolute value within int64 range
+const TELEGRAM_CHAT_ID_MIN = -9223372036854775808n;
+const TELEGRAM_CHAT_ID_MAX = 9223372036854775807n;
 
 /**
  * Extract a Telegram chat ID from a string containing a telegram/tg marker.
- * Supports patterns like:
+ * Supports patterns like (delimiter required):
  * - "telegram:123456789"
  * - "tg-123456789"
  * - "tg_123456789"
@@ -3919,6 +3921,14 @@ function extractTelegramChatIdFromString(value) {
     const candidate = match[1];
     const digitsOnly = candidate.replace(/^-/, '');
     if (digitsOnly.length > MAX_TELEGRAM_CHAT_ID_LENGTH) {
+      return null;
+    }
+    try {
+      const numericValue = BigInt(candidate);
+      if (numericValue < TELEGRAM_CHAT_ID_MIN || numericValue > TELEGRAM_CHAT_ID_MAX) {
+        return null;
+      }
+    } catch {
       return null;
     }
     return parseTelegramChatId(candidate);
