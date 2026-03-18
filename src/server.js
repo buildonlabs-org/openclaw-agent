@@ -909,9 +909,11 @@ app.post("/api/openclaw-cron-webhook", express.json({ limit: "1mb" }), async (re
       message = `⏭️ ${content}`;
     }
 
-    // Extract Telegram chat ID if present in payload (set when cron was created from Telegram)
-    const rawTelegramChatId = payload.telegramChatId || payload.telegram_chat_id || job?.telegramChatId;
-    const telegramChatId = parseTelegramChatId(rawTelegramChatId);
+    // Extract Telegram chat ID if present in payload/job/run metadata
+    const telegramChatId = resolveTelegramChatId(payload, job, run);
+    if (telegramChatId) {
+      console.log('[cron-webhook] Resolved telegramChatId:', telegramChatId);
+    }
 
     const notificationData = {
       jobId: job?.id || job?.jobId,
@@ -3221,6 +3223,12 @@ app.post("/api/chat", requireApiKey, async (req, res) => {
     if (telegramChatId && !safeTelegramChatId) {
       console.warn('[api/chat] Ignoring invalid telegramChatId:', telegramChatId);
     }
+
+    // If chat ID not provided, attempt to infer from sessionKey patterns
+    const inferredTelegramChatId = safeTelegramChatId || parseTelegramChatIdFromSessionKey(sessionKey);
+    if (!safeTelegramChatId && inferredTelegramChatId) {
+      console.log('[api/chat] Inferred telegramChatId from sessionKey:', inferredTelegramChatId);
+    }
     
     // Ensure gateway is running
     if (!isGatewayReady()) {
@@ -3246,16 +3254,16 @@ app.post("/api/chat", requireApiKey, async (req, res) => {
                                      message.includes('POST') && message.includes('webhook');
       
       if (!hasWebhookInstructions) {
-        if (safeTelegramChatId) {
+        if (inferredTelegramChatId) {
           // User is chatting via Telegram — inject instructions to deliver cron results
           // directly to their Telegram chat using --channel telegram --to <chat_id>
-          console.log('[api/chat] Injecting Telegram delivery instructions for Telegram user:', safeTelegramChatId);
+          console.log('[api/chat] Injecting Telegram delivery instructions for Telegram user:', inferredTelegramChatId);
           finalMessage = `${message}
 
-IMPORTANT: This request comes from a Telegram user (chat ID: ${safeTelegramChatId}).
+IMPORTANT: This request comes from a Telegram user (chat ID: ${inferredTelegramChatId}).
 
 When creating this cron job, configure it to deliver results directly to their Telegram chat:
-- Use: --channel telegram --to ${safeTelegramChatId}
+- Use: --channel telegram --to ${inferredTelegramChatId}
 - This ensures the cron results are sent back to the user in Telegram
 
 Also POST the FULL result to this webhook URL so the launcher UI is notified: ${webhookUrl}
@@ -3266,7 +3274,7 @@ The webhook payload should be JSON:
   "status": "success",
   "content": "your complete response here",
   "timestamp": "ISO timestamp",
-  "telegramChatId": "${safeTelegramChatId}"
+  "telegramChatId": "${inferredTelegramChatId}"
 }
 
 Set the cron job's delivery mode to "none" (the agent will POST and the Telegram channel flag handles Telegram delivery).`;
@@ -3374,7 +3382,7 @@ Set the cron job's delivery mode to "none" since you're posting the result yours
         response: cleanedResponse,
         timestamp: new Date().toISOString(),
         cronDetected: isCronRequest,
-        telegramChatId: safeTelegramChatId || undefined,
+        telegramChatId: inferredTelegramChatId || undefined,
         cronJobsFixed // Number of cron jobs that were automatically fixed
       });
     } catch (chatError) {
@@ -3891,6 +3899,76 @@ function parseTelegramChatId(value) {
   if (value == null) return null;
   const trimmed = String(value).trim();
   return /^-?\d+$/.test(trimmed) ? trimmed : null;
+}
+
+/**
+ * Attempt to infer a Telegram chat ID from a session key string.
+ * Supports patterns like:
+ * - "telegram:123456789"
+ * - "tg-123456789"
+ * - "session:telegram:123456789"
+ */
+function parseTelegramChatIdFromSessionKey(sessionKey) {
+  if (!sessionKey) return null;
+  const raw = String(sessionKey);
+
+  // Look for explicit telegram/tg markers with a numeric ID nearby
+  const match = raw.match(/(?:telegram|tg)[^0-9-]*(-?\d{4,})/i);
+  if (match) {
+    return parseTelegramChatId(match[1]);
+  }
+
+  return null;
+}
+
+/**
+ * Attempt to infer a Telegram chat ID from a cron session target.
+ * Supports patterns like:
+ * - "session:telegram:123456789"
+ * - "session:tg-123456789"
+ */
+function parseTelegramChatIdFromSessionTarget(sessionTarget) {
+  if (!sessionTarget) return null;
+  const raw = String(sessionTarget);
+  const match = raw.match(/(?:telegram|tg)[^0-9-]*(-?\d{4,})/i);
+  if (match) {
+    return parseTelegramChatId(match[1]);
+  }
+
+  return null;
+}
+
+/**
+ * Resolve Telegram chat ID from webhook payload/job/run metadata.
+ */
+function resolveTelegramChatId(payload, job, run) {
+  const directCandidates = [
+    payload?.telegramChatId,
+    payload?.telegram_chat_id,
+    job?.telegramChatId,
+    job?.delivery?.channel === 'telegram' ? job?.delivery?.to : null,
+    payload?.delivery?.channel === 'telegram' ? payload?.delivery?.to : null,
+    run?.delivery?.channel === 'telegram' ? run?.delivery?.to : null
+  ];
+
+  for (const candidate of directCandidates) {
+    const parsed = parseTelegramChatId(candidate);
+    if (parsed) return parsed;
+  }
+
+  const sessionCandidates = [
+    job?.sessionTarget,
+    payload?.sessionTarget,
+    run?.sessionTarget,
+    payload?.session
+  ];
+
+  for (const candidate of sessionCandidates) {
+    const parsed = parseTelegramChatIdFromSessionTarget(candidate);
+    if (parsed) return parsed;
+  }
+
+  return null;
 }
 
 /**
