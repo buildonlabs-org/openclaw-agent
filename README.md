@@ -7,6 +7,7 @@ Deploy an OpenClaw AI gateway to Railway with:
 - 🔌 **Headless REST API** - Full programmatic control ([docs](API.md))
 - 🤖 **Multi-Provider Support** - OpenAI, Anthropic, Google Gemini, OpenRouter
 - ⚙️ **Auto-Configuration** - Gateway settings applied automatically
+- 🎯 **Default OpenAI Setup** - Pre-configured with OpenAI API key and gpt-4o-mini model
 - 💬 **Channel Integration** - Connect Telegram, Discord bots
 - 🔐 **Device Management** - Approve pairing requests via web UI or API
 - 🎯 **Skill Management** - Install, update, and manage ClawHub skills via API

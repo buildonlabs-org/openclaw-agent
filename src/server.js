@@ -22,6 +22,22 @@ const STATE_DIR = process.env.OPENCLAW_STATE_DIR?.trim() || "/data/.openclaw";
 const WORKSPACE_DIR = process.env.OPENCLAW_WORKSPACE_DIR?.trim() || "/data/workspace";
 const SETUP_PASSWORD = process.env.SETUP_PASSWORD?.trim();
 
+// Auto-configure OpenAI defaults for all agents
+// Set DEFAULT_OPENAI_API_KEY in Railway environment variables
+const DEFAULT_OPENAI_KEY = process.env.DEFAULT_OPENAI_API_KEY?.trim();
+const DEFAULT_MODEL = process.env.DEFAULT_MODEL?.trim() || "gpt-4o-mini";
+
+// Set OpenAI API key in environment if not already set
+if (!process.env.OPENAI_API_KEY && DEFAULT_OPENAI_KEY) {
+  process.env.OPENAI_API_KEY = DEFAULT_OPENAI_KEY;
+  console.log("[autoconfigure] Set default OPENAI_API_KEY from DEFAULT_OPENAI_API_KEY env var");
+}
+if (DEFAULT_OPENAI_KEY) {
+  console.log("[autoconfigure] Default model: " + DEFAULT_MODEL);
+} else {
+  console.log("[autoconfigure] No DEFAULT_OPENAI_API_KEY set - OpenAI credentials must be provided during setup");
+}
+
 // Gateway token resolution
 function resolveGatewayToken() {
   const envToken = process.env.OPENCLAW_GATEWAY_TOKEN?.trim();
@@ -1159,19 +1175,23 @@ function buildOnboardArgs(payload) {
     payload.flow || "quickstart",
   ];
 
-  if (payload.authChoice) {
-    args.push("--auth-choice", payload.authChoice);
+  // Default to OpenAI if no auth choice specified
+  const authChoice = payload.authChoice || "openai-api-key";
+  args.push("--auth-choice", authChoice);
 
-    const secret = (payload.authSecret || "").trim();
-    const map = {
-      "openai-api-key": "--openai-api-key",
-      apiKey: "--anthropic-api-key",
-      "openrouter-api-key": "--openrouter-api-key",
-      "gemini-api-key": "--gemini-api-key",
-    };
-    const flag = map[payload.authChoice];
-    if (flag && secret) {
-      args.push(flag, secret);
+  const secret = (payload.authSecret || "").trim();
+  const map = {
+    "openai-api-key": "--openai-api-key",
+    apiKey: "--anthropic-api-key",
+    "openrouter-api-key": "--openrouter-api-key",
+    "gemini-api-key": "--gemini-api-key",
+  };
+  const flag = map[authChoice];
+  if (flag) {
+    // Use provided secret, or fallback to default OpenAI key if auth is openai
+    const secretValue = secret || (authChoice === "openai-api-key" ? DEFAULT_OPENAI_KEY : "");
+    if (secretValue) {
+      args.push(flag, secretValue);
     }
   }
 
@@ -1367,15 +1387,14 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {  // Extend ti
       );
       extra += `[config] gateway.controlUi.allowedOrigins exit=${originsResult.code}\n`;
 
-      // Set model if provided
-      if (payload.model?.trim()) {
-        extra += `[setup] Setting model to ${payload.model.trim()}...\n`;
-        const modelResult = await runCmd(
-          OPENCLAW_CLI,
-          ["models", "set", payload.model.trim()],
-        );
-        extra += `[models set] exit=${modelResult.code}\n${modelResult.output || ""}`;
-      }
+      // Set model (use provided model or default to gpt-4o-mini)
+      const modelToSet = payload.model?.trim() || DEFAULT_MODEL;
+      extra += `[setup] Setting model to ${modelToSet}...\n`;
+      const modelResult = await runCmd(
+        OPENCLAW_CLI,
+        ["models", "set", modelToSet],
+      );
+      extra += `[models set] exit=${modelResult.code}\n${modelResult.output || ""}`;
 
       // Configure channels if tokens provided
       async function configureChannel(name, cfgObj) {
@@ -1959,31 +1978,30 @@ app.post("/api/configure", requireApiKey, async (req, res) => {
       );
       extra += `[config] gateway.controlUi.allowedOrigins exit=${originsResult.code}\n`;
 
-      // Set model if provided
-      if (payload.model?.trim()) {
-        // Determine provider prefix based on authChoice
-        let providerPrefix = '';
-        if (payload.authChoice === 'openai-api-key') {
-          providerPrefix = 'openai/';
-        } else if (payload.authChoice === 'apiKey') {
-          providerPrefix = 'anthropic/';
-        } else if (payload.authChoice === 'gemini-api-key') {
-          providerPrefix = 'google/';
-        } else if (payload.authChoice === 'openrouter-api-key') {
-          providerPrefix = 'openrouter/';
-        }
-        
-        const modelName = payload.model.trim();
-        // Only add prefix if model doesn't already have one
-        const fullModelName = modelName.includes('/') ? modelName : `${providerPrefix}${modelName}`;
-        
-        extra += `[api/configure] Setting model to ${fullModelName}...\n`;
-        const modelResult = await runCmd(
-          OPENCLAW_CLI,
-          ["models", "set", fullModelName],
-        );
-        extra += `[models set] exit=${modelResult.code}\n${modelResult.output || ""}\n`;
+      // Set model (use provided model or default to gpt-4o-mini)
+      const modelToSet = payload.model?.trim() || DEFAULT_MODEL;
+      
+      // Determine provider prefix based on authChoice
+      let providerPrefix = '';
+      if (payload.authChoice === 'openai-api-key') {
+        providerPrefix = 'openai/';
+      } else if (payload.authChoice === 'apiKey') {
+        providerPrefix = 'anthropic/';
+      } else if (payload.authChoice === 'gemini-api-key') {
+        providerPrefix = 'google/';
+      } else if (payload.authChoice === 'openrouter-api-key') {
+        providerPrefix = 'openrouter/';
       }
+      
+      // Only add prefix if model doesn't already have one
+      const fullModelName = modelToSet.includes('/') ? modelToSet : `${providerPrefix}${modelToSet}`;
+      
+      extra += `[api/configure] Setting model to ${fullModelName}...\n`;
+      const modelResult = await runCmd(
+        OPENCLAW_CLI,
+        ["models", "set", fullModelName],
+      );
+      extra += `[models set] exit=${modelResult.code}\n${modelResult.output || ""}\n`;
 
       // Configure channels if tokens provided
       async function configureChannel(name, cfgObj) {
