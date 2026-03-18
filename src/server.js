@@ -3225,7 +3225,7 @@ app.post("/api/chat", requireApiKey, async (req, res) => {
     }
 
     // If chat ID not provided, attempt to infer from sessionKey patterns
-    const inferredTelegramChatId = safeTelegramChatId || extractTelegramChatIdFromString(sessionKey);
+    const inferredTelegramChatId = safeTelegramChatId || (sessionKey ? extractTelegramChatIdFromString(sessionKey) : null);
     if (!safeTelegramChatId && inferredTelegramChatId) {
       console.log('[api/chat] Inferred telegramChatId from sessionKey:', inferredTelegramChatId);
     }
@@ -3889,7 +3889,7 @@ function getAgentWebhookUrl(req) {
   return `${protocol}://${publicDomain}/api/openclaw-cron-webhook`;
 }
 
-const TELEGRAM_CHAT_ID_MIN = -(2n ** 63n);
+const TELEGRAM_CHAT_ID_MIN = -(2n ** 63n); // Telegram chat IDs are int64 in the Bot API
 const TELEGRAM_CHAT_ID_MAX = (2n ** 63n) - 1n;
 
 /**
@@ -3926,7 +3926,7 @@ function parseTelegramChatId(value) {
 function extractTelegramChatIdFromString(value) {
   if (!value) return null;
   const raw = String(value);
-  const match = raw.match(/(?:telegram|tg)[:\-_](-?\d+)(?=$|[^\d])/i);
+  const match = raw.match(/(?:telegram|tg)[:\-_](-?\d+)(?!\d)/i);
   if (match) {
     const candidate = match[1];
     return parseTelegramChatId(candidate);
