@@ -1389,10 +1389,27 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {  // Extend ti
 
       // Set model (use provided model or default to gpt-4o-mini)
       const modelToSet = payload.model?.trim() || DEFAULT_MODEL;
-      extra += `[setup] Setting model to ${modelToSet}...\n`;
+      
+      // Add provider prefix based on authChoice (which defaults to openai-api-key in buildOnboardArgs)
+      const authChoice = payload.authChoice || "openai-api-key";
+      let providerPrefix = '';
+      if (authChoice === 'openai-api-key') {
+        providerPrefix = 'openai/';
+      } else if (authChoice === 'apiKey') {
+        providerPrefix = 'anthropic/';
+      } else if (authChoice === 'gemini-api-key') {
+        providerPrefix = 'google/';
+      } else if (authChoice === 'openrouter-api-key') {
+        providerPrefix = 'openrouter/';
+      }
+      
+      // Only add prefix if model doesn't already have one
+      const fullModelName = modelToSet.includes('/') ? modelToSet : `${providerPrefix}${modelToSet}`;
+      
+      extra += `[setup] Setting model to ${fullModelName}...\n`;
       const modelResult = await runCmd(
         OPENCLAW_CLI,
-        ["models", "set", modelToSet],
+        ["models", "set", fullModelName],
       );
       extra += `[models set] exit=${modelResult.code}\n${modelResult.output || ""}`;
 
@@ -1981,16 +1998,18 @@ app.post("/api/configure", requireApiKey, async (req, res) => {
       // Set model (use provided model or default to gpt-4o-mini)
       const modelToSet = payload.model?.trim() || DEFAULT_MODEL;
       
-      // Determine provider prefix based on authChoice
+      // Determine provider prefix based on authChoice (defaults to openai-api-key like buildOnboardArgs)
+      const authChoice = payload.authChoice || "openai-api-key";
       let providerPrefix = '';
-      if (payload.authChoice === 'openai-api-key') {
+      if (authChoice === 'openai-api-key') {
         providerPrefix = 'openai/';
-      } else if (payload.authChoice === 'apiKey') {
+      } else if (authChoice === 'apiKey') {
         providerPrefix = 'anthropic/';
-      } else if (payload.authChoice === 'gemini-api-key') {
+      } else if (authChoice === 'gemini-api-key') {
         providerPrefix = 'google/';
-      } else if (payload.authChoice === 'openrouter-api-key') {
+      } else if (authChoice === 'openrouter-api-key') {
         providerPrefix = 'openrouter/';
+      }
       }
       
       // Only add prefix if model doesn't already have one
@@ -4311,9 +4330,10 @@ const server = app.listen(PORT, () => {
             JSON.stringify(allowedOrigins),
           ]);
 
-          // Set model
-          console.log(`[wrapper] AUTO-ONBOARDING: Setting model to ${DEFAULT_MODEL}...`);
-          await runCmd(OPENCLAW_CLI, ["models", "set", DEFAULT_MODEL]);
+          // Set model with provider prefix (since we default to openai-api-key)
+          const fullModelName = DEFAULT_MODEL.includes('/') ? DEFAULT_MODEL : `openai/${DEFAULT_MODEL}`;
+          console.log(`[wrapper] AUTO-ONBOARDING: Setting model to ${fullModelName}...`);
+          await runCmd(OPENCLAW_CLI, ["models", "set", fullModelName]);
 
           console.log("[wrapper] AUTO-ONBOARDING: Starting gateway...");
           await ensureGatewayRunning();
