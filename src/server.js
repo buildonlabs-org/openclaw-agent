@@ -3889,6 +3889,9 @@ function getAgentWebhookUrl(req) {
   return `${protocol}://${publicDomain}/api/openclaw-cron-webhook`;
 }
 
+const TELEGRAM_CHAT_ID_MIN = -(2n ** 63n);
+const TELEGRAM_CHAT_ID_MAX = (2n ** 63n) - 1n;
+
 /**
  * Validate a Telegram chat ID.
  * Telegram chat IDs are integers: positive for users/private chats, negative for groups/channels.
@@ -3912,9 +3915,6 @@ function parseTelegramChatId(value) {
   return trimmed;
 }
 
-const TELEGRAM_CHAT_ID_MIN = -(2n ** 63n);
-const TELEGRAM_CHAT_ID_MAX = (2n ** 63n) - 1n;
-
 /**
  * Extract a Telegram chat ID from a string containing a telegram/tg marker.
  * Supports patterns like (delimiter required):
@@ -3926,7 +3926,7 @@ const TELEGRAM_CHAT_ID_MAX = (2n ** 63n) - 1n;
 function extractTelegramChatIdFromString(value) {
   if (!value) return null;
   const raw = String(value);
-  const match = raw.match(/(?:telegram|tg)[:\-_](-?\d+)(?!\d)/i);
+  const match = raw.match(/(?:telegram|tg)[:\-_](-?\d+)(?=$|[^\d])/i);
   if (match) {
     const candidate = match[1];
     return parseTelegramChatId(candidate);
