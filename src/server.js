@@ -925,6 +925,12 @@ app.post("/api/openclaw-cron-webhook", express.json({ limit: "1mb" }), async (re
       message = `⏭️ ${content}`;
     }
 
+    // Extract Telegram chat ID if present in payload/job/run metadata
+    const telegramChatId = resolveTelegramChatId(payload, job, run);
+    if (telegramChatId) {
+      console.log('[cron-webhook] Resolved telegramChatId:', telegramChatId);
+    }
+
     const notificationData = {
       jobId: job?.id || job?.jobId,
       status: run?.status,
@@ -933,13 +939,14 @@ app.post("/api/openclaw-cron-webhook", express.json({ limit: "1mb" }), async (re
       duration: run?.duration,
       schedule: job?.schedule?.kind,
       sessionTarget: job?.sessionTarget,
+      telegramChatId: telegramChatId || undefined,
       eventType, // Include for debugging
       rawPayload: payload // Include raw payload for debugging
     };
 
     console.log(`[cron-webhook] Forwarding notification: ${jobName} [${status}]`);
 
-    // Send to launcher webhook
+    // Send to launcher webhook (frontend notification)
     const notificationSent = await notifyCronJob(jobName, message, notificationData);
 
     if (notificationSent) {
@@ -947,8 +954,19 @@ app.post("/api/openclaw-cron-webhook", express.json({ limit: "1mb" }), async (re
     } else {
       console.error(`[cron-webhook] ❌ Failed to forward notification for: ${jobName}`);
     }
+
+    // If the cron job was created from a Telegram conversation, also deliver directly to Telegram
+    let telegramSent = false;
+    if (telegramChatId) {
+      console.log(`[cron-webhook] Telegram delivery requested for chat ${telegramChatId}`);
+      const telegramResult = await sendTelegramMessage(telegramChatId, message);
+      telegramSent = telegramResult.ok;
+      if (!telegramSent) {
+        console.error(`[cron-webhook] ❌ Telegram delivery failed for chat ${telegramChatId}:`, telegramResult.error);
+      }
+    }
     
-    res.json({ ok: true, received: true, notificationSent, eventType });
+    res.json({ ok: true, received: true, notificationSent, telegramSent, eventType });
     
   } catch (error) {
     console.error('[cron-webhook] Error processing cron event:', error);
@@ -3226,13 +3244,29 @@ function getGatewayClient() {
 // POST /api/chat - Send message to agent and get response
 app.post("/api/chat", requireApiKey, async (req, res) => {
   try {
-    const { message, agentId = "main", sessionKey } = req.body || {};
+    const { message, agentId = "main", sessionKey, telegramChatId } = req.body || {};
     
     if (!message) {
       return res.status(400).json({ 
         ok: false, 
         error: 'Missing required field: message' 
       });
+    }
+    
+    // Sanitize telegramChatId to only allow numeric Telegram chat IDs (positive or negative integers)
+    const safeTelegramChatId = parseTelegramChatId(telegramChatId);
+    
+    if (telegramChatId && !safeTelegramChatId) {
+      console.warn('[api/chat] Ignoring invalid telegramChatId:', telegramChatId);
+    }
+
+    // If chat ID not provided, attempt to infer from sessionKey patterns
+    let inferredTelegramChatId = safeTelegramChatId;
+    if (!inferredTelegramChatId && sessionKey) {
+      inferredTelegramChatId = extractTelegramChatIdFromString(sessionKey);
+    }
+    if (!safeTelegramChatId && inferredTelegramChatId) {
+      console.log('[api/chat] Inferred telegramChatId from sessionKey:', inferredTelegramChatId);
     }
     
     // Ensure gateway is running
@@ -3259,9 +3293,35 @@ app.post("/api/chat", requireApiKey, async (req, res) => {
                                      message.includes('POST') && message.includes('webhook');
       
       if (!hasWebhookInstructions) {
-        // Inject instructions for agent to POST full results themselves
-        // This avoids OpenClaw's webhook delivery which only sends summaries
-        finalMessage = `${message}
+        if (inferredTelegramChatId) {
+          // User is chatting via Telegram — inject instructions to deliver cron results
+          // directly to their Telegram chat using --channel telegram --to <chat_id>
+          console.log('[api/chat] Injecting Telegram delivery instructions for Telegram user:', inferredTelegramChatId);
+          finalMessage = `${message}
+
+IMPORTANT: This request comes from a Telegram user (chat ID: ${inferredTelegramChatId}).
+
+When creating this cron job, configure it to deliver results directly to their Telegram chat:
+- Use: --channel telegram --to ${inferredTelegramChatId}
+- This ensures the cron results are sent back to the user in Telegram
+
+Also POST the FULL result to this webhook URL so the launcher UI is notified: ${webhookUrl}
+
+The webhook payload should be JSON:
+{
+  "jobName": "your job name",
+  "status": "success",
+  "content": "your complete response here",
+  "timestamp": "ISO timestamp",
+  "telegramChatId": "${inferredTelegramChatId}"
+}
+
+Set the cron job's delivery mode to "none" (the agent will POST and the Telegram channel flag handles Telegram delivery).`;
+          console.log('[api/chat] Injected Telegram + webhook delivery instructions');
+        } else {
+          // Standard (non-Telegram) cron request: inject webhook POST instructions
+          // Agents POST full results themselves; avoids OpenClaw's webhook delivery which only sends summaries
+          finalMessage = `${message}
 
 CRITICAL: After completing your work, POST the FULL result to this webhook URL: ${webhookUrl}
 
@@ -3274,7 +3334,8 @@ Use curl, fetch, or any HTTP tool you have available. The payload should be JSON
 }
 
 Set the cron job's delivery mode to "none" since you're posting the result yourself. This ensures the launcher UI receives your complete response, not just a summary.`;
-        console.log('[api/chat] Injected webhook POST instructions');
+          console.log('[api/chat] Injected webhook POST instructions');
+        }
       } else {
         console.log('[api/chat] Webhook instructions already present, skipping injection');
       }
@@ -3360,6 +3421,7 @@ Set the cron job's delivery mode to "none" since you're posting the result yours
         response: cleanedResponse,
         timestamp: new Date().toISOString(),
         cronDetected: isCronRequest,
+        telegramChatId: inferredTelegramChatId || undefined,
         cronJobsFixed // Number of cron jobs that were automatically fixed
       });
     } catch (chatError) {
@@ -3866,6 +3928,129 @@ function getAgentWebhookUrl(req) {
   return `${protocol}://${publicDomain}/api/openclaw-cron-webhook`;
 }
 
+const TELEGRAM_CHAT_ID_MIN = -(2n ** 63n); // Telegram chat IDs are int64 in the Bot API
+const TELEGRAM_CHAT_ID_MAX = (2n ** 63n) - 1n;
+
+/**
+ * Validate a Telegram chat ID.
+ * Telegram chat IDs are integers: positive for users/private chats, negative for groups/channels.
+ * @param {*} value - Value to validate
+ * @returns {string|null} Trimmed numeric string if valid, null otherwise
+ */
+function parseTelegramChatId(value) {
+  if (value == null) return null;
+  const trimmed = String(value).trim();
+  if (!/^-?\d+$/.test(trimmed)) {
+    return null;
+  }
+  try {
+    const numericValue = BigInt(trimmed);
+    if (numericValue < TELEGRAM_CHAT_ID_MIN || numericValue > TELEGRAM_CHAT_ID_MAX) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+  return trimmed;
+}
+
+/**
+ * Extract a Telegram chat ID from a string containing a telegram/tg marker.
+ * Supports patterns like (delimiter required):
+ * - "telegram:123456789"
+ * - "tg-123456789"
+ * - "tg_123456789"
+ * - "session:telegram:123456789"
+ */
+function extractTelegramChatIdFromString(value) {
+  if (!value) return null;
+  const raw = String(value);
+  const match = raw.match(/(?:telegram|tg)[:\-_](-?\d{1,19})(?!\d)/i);
+  if (match) {
+    const candidate = match[1];
+    return parseTelegramChatId(candidate);
+  }
+  return null;
+}
+
+/**
+ * Resolve Telegram chat ID from webhook payload/job/run metadata.
+ */
+function resolveTelegramChatId(payload, job, run) {
+  const directCandidates = [
+    payload?.telegramChatId,
+    payload?.telegram_chat_id,
+    job?.telegramChatId,
+    job?.delivery?.channel === 'telegram' ? job?.delivery?.to : null,
+    payload?.delivery?.channel === 'telegram' ? payload?.delivery?.to : null,
+    run?.delivery?.channel === 'telegram' ? run?.delivery?.to : null
+  ];
+
+  for (const candidate of directCandidates) {
+    const parsed = parseTelegramChatId(candidate);
+    if (parsed) return parsed;
+  }
+
+  const sessionCandidates = [
+    job?.sessionTarget,
+    payload?.sessionTarget,
+    run?.sessionTarget,
+    payload?.session
+  ];
+
+  for (const candidate of sessionCandidates) {
+    const parsed = extractTelegramChatIdFromString(candidate);
+    if (parsed) return parsed;
+  }
+
+  return null;
+}
+
+/**
+ * Send a message to a Telegram chat via the OpenClaw CLI.
+ * Used to deliver cron job results back to the Telegram user who set up the job.
+ *
+ * Callers MUST pass a validated chat ID (use parseTelegramChatId first).
+ * This function still defensively validates to guard against direct calls.
+ *
+ * @param {string} chatId - Telegram chat ID (validated numeric string, may be negative for groups)
+ * @param {string} message - Message text to send
+ * @returns {Promise<{ok: boolean, output?: string, error?: string}>}
+ */
+async function sendTelegramMessage(chatId, message) {
+  if (!chatId || !message) {
+    return { ok: false, error: 'Missing chatId or message' };
+  }
+
+  // Defensive: ensure the chat ID is still in the expected numeric format
+  if (!parseTelegramChatId(chatId)) {
+    console.warn('[telegram-send] Invalid chat ID format:', chatId);
+    return { ok: false, error: 'Invalid Telegram chat ID format' };
+  }
+
+  try {
+    console.log(`[telegram-send] Sending message to Telegram chat ${chatId} (${message.length} chars)`);
+    const result = await runCmd(OPENCLAW_CLI, [
+      'deliver',
+      '--channel', 'telegram',
+      '--to', String(chatId),
+      message
+    ]);
+
+    if (result.code === 0) {
+      console.log(`[telegram-send] ✅ Message delivered to Telegram chat ${chatId}`);
+      return { ok: true, output: result.output };
+    } else {
+      console.error(`[telegram-send] ❌ Failed to deliver to Telegram chat ${chatId}:`, result.error || result.output);
+      return { ok: false, error: result.error || result.output || 'Delivery failed' };
+    }
+  } catch (err) {
+    console.error(`[telegram-send] Error sending to Telegram:`, err.message);
+    return { ok: false, error: err.message };
+  }
+}
+
+
 /**
  * Start periodic audit to ensure all cron jobs use delivery=none
  * Runs every 5 minutes
@@ -3995,7 +4180,41 @@ app.get("/api/channels", requireApiKey, async (_req, res) => {
   }
 });
 
-// GET /api/models - List available models
+// POST /api/telegram/send - Send a message to a specific Telegram chat
+// Used to deliver cron job results or notifications to users who set up jobs via Telegram
+app.post("/api/telegram/send", requireApiKey, async (req, res) => {
+  try {
+    const { chatId, message } = req.body || {};
+
+    if (!chatId || !message) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Missing required fields: chatId and message'
+      });
+    }
+
+    // Validate chat ID: Telegram chat IDs are integers (positive for users, negative for groups)
+    const safeChatId = parseTelegramChatId(chatId);
+    if (!safeChatId) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Invalid Telegram chat ID: must be a numeric value'
+      });
+    }
+
+    const result = await sendTelegramMessage(safeChatId, String(message));
+
+    if (result.ok) {
+      return res.json({ ok: true, chatId: safeChatId, delivered: true, output: result.output });
+    } else {
+      return res.status(502).json({ ok: false, error: result.error, chatId: safeChatId });
+    }
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+
 app.get("/api/models", requireApiKey, async (req, res) => {
   try {
     // Support provider filter and --all flag
